@@ -34,6 +34,18 @@ def test_measure_skew_does_not_modify_system(monkeypatch):
     assert calls == [["/usr/bin/ntpdate", "-q", "10.0.0.1"]]
 
 
+def test_measure_skew_parses_ntpdate_compact_format(monkeypatch):
+    monkeypatch.setattr(autoconfig.shutil, "which", lambda name: "/usr/bin/ntpdate")
+    result = autoconfig.measure_time_skew(
+        "10.0.0.1",
+        runner=lambda *a, **k: SimpleNamespace(
+            returncode=0, stdout="2026-08-30 18:45:24 (+0000) -0.000078 +/- 0.000617 10.0.0.1 s1", stderr=""
+        ),
+    )
+    assert result["status"] == "MEASURED"
+    assert result["skew_seconds"] == -0.000078
+
+
 def test_sync_time_uses_privileged_one_shot_command(monkeypatch):
     monkeypatch.setattr(autoconfig.shutil, "which", lambda name: "/usr/bin/ntpdate")
     monkeypatch.setattr(autoconfig.os, "geteuid", lambda: 1000)

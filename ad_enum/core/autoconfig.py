@@ -22,7 +22,11 @@ def measure_time_skew(dc_ip, timeout=5, runner=subprocess.run):
         proc = runner([ntpdate, "-q", dc_ip], capture_output=True, text=True,
                       timeout=timeout, check=False)
         raw = (proc.stdout or "") + (proc.stderr or "")
+        # ntpdate emits either `offset N sec` or the compact
+        # `(<timezone>) N +/- ...` form, depending on version.
         match = re.search(r"\boffset\s+([-+]?\d+(?:\.\d+)?)\s+sec", raw, re.I)
+        if not match:
+            match = re.search(r"\)\s*([-+]?\d+(?:\.\d+)?)\s+\+/-", raw)
         result = {"status": "MEASURED" if proc.returncode == 0 and match else "FAILED",
                   "raw": raw[-500:]}
         if match:
