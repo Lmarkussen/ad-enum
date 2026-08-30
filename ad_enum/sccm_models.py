@@ -146,7 +146,9 @@ def normalize_cred1_evidence(data):
     data = data if isinstance(data, dict) else {}
     return {
         "dp": data.get("dp", data.get("host", "")),
-        "site_code": data.get("site_code", ""),
+        "status": str(data.get("status", "PARTIAL")).upper(),
+        "site_code": data.get("site_code", data.get("site", "")),
+        "interface": data.get("interface", ""),
         "pxe": str(data.get("pxe", "UNKNOWN")).upper(),
         "wds": str(data.get("wds", "UNKNOWN")).upper(),
         "tftp": str(data.get("tftp", "UNKNOWN")).upper(),
@@ -155,6 +157,10 @@ def normalize_cred1_evidence(data):
         "media_protection": str(data.get("media_protection", "UNKNOWN")).upper(),
         "secret_exposure": str(data.get("secret_exposure", "UNKNOWN")).upper(),
         "secret_inspection": data.get("secret_inspection", "NOT ATTEMPTED"),
+        "credentials": list(data.get("credentials", data.get("recovered_secrets", [])) or []),
+        "stages": data.get("stages", {}),
+        "policies": data.get("policies", data.get("task_sequence_policies", 0)),
+        "errors": list(data.get("errors", []) or []),
         "sources": list(data.get("sources", []) or []),
         "evidence": list(data.get("evidence", []) or []),
     }

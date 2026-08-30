@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 import sys
 import ipaddress
 import shutil
@@ -34,9 +35,8 @@ from .recon import (normalize_mssql, normalize_dfs, normalize_services,
 from .service_probe import DEFAULT_SERVICES, probe_known_services
 from .access import from_netexec_hosts, merge_access
 from .adapters.netexec import NetExecAdapter
-from .cred1_adapter import run_safe_cred1
+from .cinderpath_adapter import run_cinderpath_cred1
 from .cred1_runtime import check_cred1_runtime
-from .sccm_models import SCCMArtifactLimits
 
 
 CATEGORY_ORDER = ("ADCS", "POLICY", "KERBEROS", "ACCOUNT", "DELEGATION",
@@ -106,6 +106,14 @@ def _finding_lines(findings):
                 if evidence.get("value"):
                     label = "cpassword" if item.get("rule") == "gpp-cpassword" else "Value"
                     lines.append(f"  {label:<18} {evidence['value']}")
+            elif category == "SCCM" and item.get("rule") == "CRED-1":
+                lines.extend([f"  Type ............. {evidence.get('type', 'other')}",
+                              f"  Name ............. {evidence.get('name', '')}"])
+                if evidence.get("username"):
+                    lines.append(f"  Username ......... {evidence['username']}")
+                lines.append(f"  Password ......... {evidence.get('value', '')}")
+                if evidence.get("source_policy"):
+                    lines.append(f"  Source policy .... {evidence['source_policy']}")
             elif status:
                 lines.append(f"  Status ........... {status}")
             lines.append("")
@@ -666,8 +674,7 @@ def main():
                                       "sources": ["CRED-1 execution-host prerequisite check"],
                                       "runtime": runtime})
             else:
-                cred1_results.append(run_safe_cred1(target, timeout=min(a.timeout, 30),
-                                                    limits=SCCMArtifactLimits()))
+                cred1_results.append(run_cinderpath_cred1(target, timeout=min(a.timeout, 60)))
         sccm_result["cred1"] = cred1_results[0] if len(cred1_results) == 1 else cred1_results
         workspace.write_json(workspace.findings_path("SCCM", "cred1.json"), sccm_result["cred1"])
         cred1_status = "PASS" if any(x.get("pxe") == "CONFIRMED" for x in cred1_results) else "PARTIAL"
@@ -1004,6 +1011,28 @@ def main():
                 evidence=secret, status="single-source", priority="high",
                 workspace_artifacts=["LDAP/attributes.json"], first_seen_scan=workspace.scan_id,
                 current_scan=workspace.scan_id).as_dict())
+    cred1_findings = []
+    cred1_output = sccm_result.get("cred1")
+    cred1_items = cred1_output if isinstance(cred1_output, list) else ([cred1_output] if cred1_output else [])
+    for cred1_item in cred1_items:
+        for secret in cred1_item.get("credentials", []) or []:
+            value = secret.get("value", secret.get("password", ""))
+            if not value:
+                continue
+            name = secret.get("name", "") or "CRED-1 secret"
+            digest = hashlib.sha256(str(value).encode()).hexdigest()[:16]
+            cred1_findings.append(NormalizedFinding(
+                finding_id=f"sccm-cred1:{cred1_item.get('dp', 'unknown')}:{name}:{digest}",
+                category="SCCM", rule="CRED-1", title="CRED-1 — PXE boot media exposes credential material",
+                affected_object=cred1_item.get("dp", "unknown"), domain=workspace.domain,
+                sources=[{"source": "CinderPath", "observed": True}],
+                evidence={"type": secret.get("type", "other"), "name": name,
+                          "username": secret.get("username", ""), "value": value,
+                          "source_policy": secret.get("source_policy", ""),
+                          "task_sequence": secret.get("task_sequence", ""),
+                          "dp": cred1_item.get("dp", ""), "site": cred1_item.get("site_code", "")},
+                status="confirmed", priority="high", workspace_artifacts=["SCCM/cred1.json"],
+                first_seen_scan=workspace.scan_id, current_scan=workspace.scan_id).as_dict())
     seen_credentials = set()
     for item in gpo_findings + ldap_secret_findings:
         value = item.get("evidence", {}).get("value")
@@ -1019,6 +1048,16 @@ def main():
                                        "type": evidence.get("type", item.get("rule")),
                                        "source": item.get("file") or evidence.get("attribute"),
                                        "context": item.get("gpo", {}).get("display_name") or item.get("title")})
+    for item in cred1_findings:
+        evidence = item["evidence"]
+        key = (str(evidence.get("username") or evidence.get("name")).lower(),
+               str(evidence.get("value")), "CRED-1")
+        if key not in seen_credentials:
+            seen_credentials.add(key)
+            discovered_credentials.append({"account": evidence.get("username") or evidence.get("name"),
+                                           "value": evidence["value"], "type": evidence.get("type", "other"),
+                                           "source": evidence.get("source_policy") or "CinderPath",
+                                           "context": f"CRED-1 PXE — {evidence.get('dp', '')}"})
     workspace.write_json(workspace.root / "credentials.json", discovered_credentials)
     workspace.write_text(workspace.root / "credentials.txt", "\n\n".join(
         f"Credential exposure — {x['context']}\n  Account: {x['account']}\n"
@@ -1101,7 +1140,7 @@ def main():
     active_kerberos_findings = [x for x in kerberos_findings
                                 if not (x.get("rule") == "Kerberoastable-account"
                                         and x.get("evidence", {}).get("enabled") is False)]
-    all_findings = (finding_records + policy_findings + description_findings + ldap_secret_findings + active_kerberos_findings +
+    all_findings = (finding_records + policy_findings + description_findings + ldap_secret_findings + cred1_findings + active_kerberos_findings +
                     domain_security_findings +
                     delegation_findings + relay_findings + smb_findings + acl_findings +
                     ldap_security_findings + anonymous_smb_findings + [x["normalized"] for x in gpo_findings])
@@ -1270,6 +1309,14 @@ def main():
             console.line(f"  Boot metadata ..... {item.get('boot_file') or 'UNKNOWN'}")
             console.line(f"  Media protection .. {item.get('media_protection', 'UNKNOWN')}")
             console.line(f"  Secret inspection . {item.get('secret_inspection', 'NOT ATTEMPTED')}")
+            if item.get("credentials"):
+                console.line(f"  Unique secrets .... {len(item['credentials'])}")
+                for secret in item["credentials"]:
+                    console.line(f"    Type ............ {secret.get('type', 'other')}")
+                    console.line(f"    Name ............ {secret.get('name', '')}")
+                    if secret.get("username"):
+                        console.line(f"    Username ........ {secret['username']}")
+                    console.line(f"    Password ........ {secret.get('value', '')}")
     console.line()
     console.heading("Findings")
     if not all_findings:

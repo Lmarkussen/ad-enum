@@ -4,6 +4,7 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 build/
+.cache/
 *.egg-info/
 
 # Operator workspaces and scan output

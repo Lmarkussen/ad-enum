@@ -96,6 +96,21 @@ if [[ "$mode" != minimal ]]; then
     if command -v nxc >/dev/null 2>&1; then ok "NetExec installed"; else warn "NetExec is not available; default toolset is incomplete"; fi
   fi
   if command -v go >/dev/null 2>&1; then
+    say "Installing CinderPath CRED-1 adapter"
+    cinderpath_bin="$repo_dir/.venv/bin/cinderpath"
+    cinderpath_source="$repo_dir/.cache/CinderPath"
+    if [[ ! -x "$cinderpath_bin" ]]; then
+      if [[ ! -d "$cinderpath_source/.git" ]]; then
+        mkdir -p "$(dirname "$cinderpath_source")"
+        run_logged "CinderPath source clone" git clone --depth 1 git@github.com:Lmarkussen/CinderPath.git "$cinderpath_source"
+      fi
+      run_logged "CinderPath build" go -C "$cinderpath_source" build -o "$cinderpath_bin" ./cmd/cinderpath
+    fi
+    if "$cinderpath_bin" assess CRED-1 --help >/dev/null 2>&1; then
+      ok "CinderPath CRED-1 adapter available"
+    else
+      warn "CinderPath is present but CRED-1 structured output is unavailable"
+    fi
     say "Building bounded SCCM PXE helper"
     run_logged "SCCM PXE helper build" go -C helpers/sccm_pxe build -o "$repo_dir/.venv/bin/ad-enum-sccm-pxe" .
     ok "Bounded SCCM PXE helper built"
