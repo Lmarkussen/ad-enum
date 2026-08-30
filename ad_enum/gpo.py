@@ -35,22 +35,44 @@ def _credential_signals(text):
 
 
 def inspect_file(gpo, relative_path, content):
-    """Return redacted findings; never retain the supplied secret value."""
+    """Return high-confidence credential findings with discovered values.
+
+    This intentionally applies only to target data.  Scanner authentication
+    credentials are never passed to this parser or persisted by it.
+    """
     text = content.decode("utf-8", "replace") if isinstance(content, bytes) else str(content or "")
     lower = relative_path.lower()
     findings = []
-    if "cpassword" in text.lower():
+    cpassword = re.search(r"(?i)cpassword\s*=\s*[\"']?([^\"'\s<]+)", text)
+    if cpassword:
         findings.append({"rule": "gpp-cpassword", "title": f"GPP credential exposure — {gpo.get('display_name') or gpo.get('guid')}",
                          "gpo": gpo, "file": relative_path, "account": _account(text),
-                         "evidence": {"type": "cpassword", "value": "<redacted>",
+                         "evidence": {"type": "cpassword", "value": cpassword.group(1),
                                       "fingerprint": hashlib.sha256(text.encode()).hexdigest()[:16]}})
     signals = _credential_signals(text)
-    if signals and "cpassword" not in text.lower():
+    extracted = _extract_credentials(text)
+    if signals and not cpassword:
         findings.append({"rule": "gpo-cleartext-credential", "title": f"Cleartext credential in GPO — {gpo.get('display_name') or gpo.get('guid')}",
-                         "gpo": gpo, "file": relative_path, "account": _account(text),
-                         "evidence": {"type": "credential-pattern", "signals": signals,
-                                      "context": "<redacted>", "fingerprint": hashlib.sha256(text.encode()).hexdigest()[:16]}})
+                         "gpo": gpo, "file": relative_path, "account": extracted.get("username") or _account(text),
+                         "evidence": {"type": extracted.get("type", "credential-pattern"), "signals": signals,
+                                      "username": extracted.get("username", "UNKNOWN"),
+                                      "value": extracted.get("value"), "fingerprint": hashlib.sha256(text.encode()).hexdigest()[:16]}})
     return findings
+
+
+def _extract_credentials(text):
+    """Extract only explicit value-bearing credential structures."""
+    patterns = [
+        (r"(?im)\bnet\s+use\b[^\n]*\s/(?:user|u):([^\s]+)\s+([^\s]+)", "net use"),
+        (r"(?im)\bcmdkey\b[^\n]*\s/(?:user|u):([^\s]+)[^\n]*\s/(?:pass|password):([^\s]+)", "cmdkey"),
+        (r"(?im)(?:user(?:name)?|account)\s*[:=]\s*[\"']?([^\"'\s]+)[\"']?[^\n]*(?:password|passwd|pwd)\s*[:=]\s*[\"']?([^\"'\s]+)", "credential literal"),
+        (r"(?im)(?:user(?:name)?|user\s*id)\s*=\s*([^;\s]+);\s*password\s*=\s*([^;\s]+)", "connection string"),
+    ]
+    for pattern, kind in patterns:
+        match = re.search(pattern, text or "")
+        if match:
+            return {"type": kind, "username": match.group(1), "value": match.group(2)}
+    return {"type": "credential-pattern", "username": _account(text), "value": None}
 
 
 def _account(text):

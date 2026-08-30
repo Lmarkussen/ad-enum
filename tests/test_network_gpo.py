@@ -22,12 +22,11 @@ def test_networkhound_opengraph_normalization():
     assert result["records"][0]["subnet"] == "10.1.10.0/24"
 
 
-def test_gpo_metadata_and_cpassword_are_redacted():
+def test_gpo_metadata_and_cpassword_preserve_discovered_value():
     gpo = normalize_gpos([{"name": ["{ABC}"], "displayName": ["Test GPO"], "gPCFileSysPath": ["\\\\sccm.lab\\SYSVOL\\Policies\\{ABC}"]}])[0]
     findings = inspect_file(gpo, "Groups.xml", '<User userName="svc-test" cpassword="SYNTHETIC" />')
     assert findings[0]["rule"] == "gpp-cpassword"
-    assert findings[0]["evidence"]["value"] == "<redacted>"
-    assert "SYNTHETIC" not in str(findings)
+    assert findings[0]["evidence"]["value"] == "SYNTHETIC"
 
 
 def test_gpo_weak_keyword_is_not_a_finding():

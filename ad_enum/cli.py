@@ -293,7 +293,12 @@ def main():
                           for x in sysvol.get("files", [])])
     workspace.write_json(sysvol_dir / "findings.json", gpo_findings)
     workspace.write_text(workspace.module_dir("GPO") / "findings.txt",
-                         "\n\n".join(f"[GPO] {x['title']}\n  File: {x['file']}\n  Account: {x['account']}" for x in gpo_findings) + ("\n" if gpo_findings else ""))
+                         "\n\n".join(
+                             f"[GPO] {x['title']}\n  File: {x['file']}\n"
+                             f"  Account: {x['account']}\n"
+                             f"  {('cpassword' if x['rule'] == 'gpp-cpassword' else 'Password')}: "
+                             f"{x['evidence'].get('value')}"
+                             for x in gpo_findings) + ("\n" if gpo_findings else ""))
     workspace.write_json(workspace.module_dir("GPO") / "NETLOGON" / "inventory.json", netlogon)
     coverage.add("GPO / LDAP inventory", "PASS", f"{len(gpos)} group policy object(s)")
     gpo_status = {"PASS": "PASS", "FAILED": "FAILED", "UNAVAILABLE": "NOT AVAILABLE"}.get(sysvol.get("status"), "FAILED")
@@ -314,6 +319,24 @@ def main():
     workspace.write_json(workspace.findings_path("ACL", "privileged-groups.json"), privileged_groups)
     workspace.write_json(workspace.findings_path("ACL", "inventory.json"),
                          {"gpo_acls": gpo_acls, "high_value_acls": high_value_acls})
+    discovered_credentials = []
+    seen_credentials = set()
+    for item in gpo_findings:
+        value = item.get("evidence", {}).get("value")
+        if not value: continue
+        key = (str(item.get("account", "")).lower(), str(value), item.get("rule"))
+        if key in seen_credentials: continue
+        seen_credentials.add(key)
+        discovered_credentials.append({"account": item.get("account", "UNKNOWN"),
+                                       "value": value,
+                                       "type": item.get("evidence", {}).get("type", item.get("rule")),
+                                       "source": item.get("file"),
+                                       "context": item.get("gpo", {}).get("display_name")})
+    workspace.write_json(workspace.root / "credentials.json", discovered_credentials)
+    workspace.write_text(workspace.root / "credentials.txt", "\n\n".join(
+        f"Credential exposure — {x['context']}\n  Account: {x['account']}\n"
+        f"  Value: {x['value']}\n  Type: {x['type']}\n  Source: {x['source']}"
+        for x in discovered_credentials) + ("\n" if discovered_credentials else ""))
     acl_findings = []
     for observation in gpo_acl_observations + high_value_acl_observations:
         acl_target = observation["target"]
