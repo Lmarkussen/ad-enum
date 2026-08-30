@@ -15,7 +15,9 @@ def cinderpath_path():
     if configured:
         candidates.append(configured)
     candidates.extend((shutil.which("cinderpath"),
-                       str(Path.home() / ".local/bin/cinderpath")))
+                       str(Path.home() / ".local/bin/cinderpath"),
+                       str(Path.cwd() / ".venv/bin/cinderpath"),
+                       str(Path(__file__).resolve().parent.parent / ".venv/bin/cinderpath")))
     return next((x for x in candidates if x and Path(x).is_file()), None)
 
 

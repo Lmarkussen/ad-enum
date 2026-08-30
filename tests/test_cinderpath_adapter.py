@@ -1,7 +1,7 @@
 import json
 import stat
 
-from ad_enum.cinderpath_adapter import run_cinderpath_cred1
+from ad_enum.cinderpath_adapter import cinderpath_path, run_cinderpath_cred1
 
 
 def _fake_cinderpath(path, payload):
@@ -28,3 +28,14 @@ def test_cinderpath_adapter_missing_tool_is_explicit(tmp_path):
     result = run_cinderpath_cred1("10.1.10.41", executable=str(tmp_path / "missing"))
     assert result["status"] == "TOOL FAILURE"
     assert "FileNotFoundError" in result["errors"][0]
+
+
+def test_cinderpath_path_finds_repository_virtualenv_binary(tmp_path, monkeypatch):
+    binary = tmp_path / ".venv" / "bin" / "cinderpath"
+    binary.parent.mkdir(parents=True)
+    binary.write_text("#!/bin/sh\n", encoding="utf-8")
+    binary.chmod(binary.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("CINDERPATH_BIN", raising=False)
+    monkeypatch.setattr("ad_enum.cinderpath_adapter.shutil.which", lambda _: None)
+    assert cinderpath_path() == str(binary)
