@@ -177,8 +177,11 @@ class Collector:
                 is_privileged_group = "group" in classes and name in privileged
                 uac = item.get("userAccountControl", 0)
                 primary = item.get("primaryGroupID", 0)
-                try: uac, primary = int(uac[0] if isinstance(uac, list) else uac or 0), int(primary[0] if isinstance(primary, list) else primary or 0)
-                except (TypeError, ValueError): uac, primary = 0, 0
+                try:
+                    uac = int((uac[0] if uac else 0) if isinstance(uac, list) else (uac or 0))
+                    primary = int((primary[0] if primary else 0) if isinstance(primary, list) else (primary or 0))
+                except (TypeError, ValueError, IndexError):
+                    uac, primary = 0, 0
                 spns = " ".join(str(v) for v in (item.get("servicePrincipalName") or []))
                 is_dc = ("computer" in classes and
                          (bool(uac & 0x2000) or primary == 516 or
