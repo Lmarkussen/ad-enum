@@ -16,6 +16,7 @@ from .inventory import native_inventory, DomainInventory, build_targets, sensiti
 from .sccm import discover as discover_sccm, normalize_relayking, probe_management_points
 from .network import build_dns_map
 from .gpo import normalize_gpos, collect_sysvol, collect_netlogon, inspect_file
+from .posture import normalize_smb, normalize_trusts, normalize_gpo_acls, normalize_laps
 from .kerberos import roastable
 from .delegation import enumerate_delegation, enumerate_gmsa
 from .core.console import Console
@@ -141,6 +142,31 @@ def main():
     workspace.write_json(workspace.findings_path("NetworkHound", "inventory.json"),
                          networkhound_result.get("inventory", {}) if isinstance(networkhound_result, dict) else {})
     workspace.write_json(workspace.findings_path("NetworkHound", "dns-map.json"), dns_map)
+    smb_inventory = normalize_smb(inventory)
+    workspace.write_json(workspace.findings_path("SMB", "inventory.json"), smb_inventory)
+    unsigned = [x for x in smb_inventory if x.get("smb_signing") is False]
+    smb_findings = []
+    if unsigned:
+        smb_findings.append(NormalizedFinding(
+            finding_id="smb:signing-not-required", category="SMB", rule="signing-not-required",
+            title=f"SMB signing not required — {len(unsigned)} host(s)", affected_object=workspace.domain,
+            domain=workspace.domain, sources=[{"source": source, "observed": True} for source in sorted({s for x in unsigned for s in x["sources"]})],
+            evidence={"hosts": unsigned}, status="single-source", priority="medium",
+            workspace_artifacts=["SMB/inventory.json"], first_seen_scan=workspace.scan_id,
+            current_scan=workspace.scan_id).as_dict())
+    workspace.write_json(workspace.findings_path("SMB", "findings.json"), smb_findings)
+    workspace.write_text(workspace.module_dir("SMB") / "findings.txt", "\n".join(f"[{x['category']}] {x['title']}" for x in smb_findings) + ("\n" if smb_findings else ""))
+    trust_inventory = normalize_trusts(collector.raw.get("trusts", []))
+    workspace.write_json(workspace.findings_path("Trusts", "inventory.json"), trust_inventory)
+    workspace.write_json(workspace.findings_path("Trusts", "findings.json"), [])
+    workspace.write_text(workspace.module_dir("Trusts") / "findings.txt", "")
+    ldap_security = {"signing": {"state": "UNKNOWN", "evidence": [],
+                                  "reason": "no direct unsigned-bind policy/protocol observation"},
+                     "channel_binding": {"state": "UNKNOWN", "evidence": [],
+                                          "reason": "LDAPS channel binding cannot be assessed without a valid TLS service"}}
+    workspace.write_json(workspace.findings_path("LDAPSecurity", "inventory.json"), ldap_security)
+    workspace.write_json(workspace.findings_path("LDAPSecurity", "findings.json"), [])
+    workspace.write_text(workspace.module_dir("LDAPSecurity") / "findings.txt", "")
     findings, comparisons, coverage, dangling, duplicates = scan(cas, templates, certipy=certipy)
     exposures = roastable(inventory)
     delegation_records = enumerate_delegation(inventory)
@@ -201,6 +227,7 @@ def main():
     workspace.write_json(workspace.findings_path("SCCM", "pxe.json"), sccm_result.get("pxe", {}))
     coverage.add("SCCM / infrastructure discovery", "PASS", f"{len(sccm_result['hosts'])} candidate host(s)")
     gpos = normalize_gpos(collector.raw.get("gpos", []))
+    gpo_acls = normalize_gpo_acls(collector.raw.get("gpos", []))
     sysvol = collect_sysvol(context, gpos)
     netlogon = collect_netlogon(context)
     gpo_findings = []
@@ -211,6 +238,7 @@ def main():
         safe = dict(item); safe.pop("content", None)
         workspace.write_json(workspace.raw_dir("GPO") / (str(item["gpo_guid"]).strip("{}").lower() + ".json"), safe)
     workspace.write_json(workspace.findings_path("GPO", "inventory.json"), gpos)
+    workspace.write_json(workspace.findings_path("GPO", "acl.json"), gpo_acls)
     workspace.write_json(workspace.findings_path("GPO", "policies.json"), {"status": sysvol.get("status"), "error": sysvol.get("error", ""), "files": [{k: v for k, v in x.items() if k != "content"} for x in sysvol.get("files", [])]})
     workspace.write_json(workspace.findings_path("GPO", "findings.json"), gpo_findings)
     sysvol_dir = workspace.module_dir("GPO") / "SYSVOL"
@@ -227,6 +255,25 @@ def main():
     coverage.add("GPO / SYSVOL targeted inspection", gpo_status, f"{len(sysvol.get('files', []))} file(s)")
     netlogon_status = {"PASS": "PASS", "FAILED": "FAILED", "UNAVAILABLE": "NOT AVAILABLE"}.get(netlogon.get("status"), "FAILED")
     coverage.add("GPO / NETLOGON targeted inventory", netlogon_status, f"{len(netlogon.get('files', []))} file(s)")
+    laps_inventory = normalize_laps(collector.raw.get("laps_schema", []), inventory)
+    workspace.write_json(workspace.findings_path("LAPS", "inventory.json"), laps_inventory)
+    workspace.write_json(workspace.findings_path("LAPS", "findings.json"), [])
+    workspace.write_text(workspace.module_dir("LAPS") / "findings.txt", "")
+    privileged_names = {"domain admins", "enterprise admins", "administrators", "schema admins",
+                        "account operators", "server operators", "backup operators", "dnsadmins",
+                        "group policy creator owners"}
+    privileged_groups = [{"name": r.attributes.get("sAMAccountName") or r.attributes.get("name") or r.identifier,
+                          "sid": r.identifier, "sources": r.sources}
+                         for r in inventory.records.get("groups", {}).values()
+                         if str(r.attributes.get("sAMAccountName") or r.attributes.get("name") or "").lower() in privileged_names]
+    workspace.write_json(workspace.findings_path("ACL", "privileged-groups.json"), privileged_groups)
+    workspace.write_json(workspace.findings_path("ACL", "inventory.json"), {"gpo_acls": gpo_acls})
+    workspace.write_json(workspace.findings_path("ACL", "findings.json"), [])
+    workspace.write_text(workspace.module_dir("ACL") / "findings.txt", "")
+    coverage.add("SMB / signing posture", "PASS" if smb_inventory else "NOT CHECKED", f"{len(smb_inventory)} host(s)")
+    coverage.add("LDAP / signing and channel binding", "NOT CHECKED", "posture unknown; no direct safe proof")
+    coverage.add("Trusts / LDAP inventory", "PASS", f"{len(trust_inventory)} trust(s)")
+    coverage.add("LAPS / schema and authorization inventory", "PASS", f"{len(laps_inventory.get('schema_attributes', []))} schema attribute(s)")
     relay_findings = []
     relay_result = external_results.get("relay", {})
     if relay_result.get("status") == "PASS":
@@ -408,7 +455,7 @@ def main():
             status="single-source", priority="high", workspace_artifacts=["GPO/findings.json"],
             first_seen_scan=workspace.scan_id, current_scan=workspace.scan_id)
         item["normalized"] = gpo_finding.as_dict()
-    all_findings = finding_records + policy_findings + description_findings + kerberos_findings + delegation_findings + relay_findings + [x["normalized"] for x in gpo_findings]
+    all_findings = finding_records + policy_findings + description_findings + kerberos_findings + delegation_findings + relay_findings + smb_findings + [x["normalized"] for x in gpo_findings]
     workspace.write_json(workspace.findings_path("vulnerabilities", "findings.json"), all_findings)
     workspace.write_text(workspace.findings_path("vulnerabilities", "findings.txt"),
                           "\n".join(f"[{x['category']}] {x['title']}" for x in all_findings) + "\n")

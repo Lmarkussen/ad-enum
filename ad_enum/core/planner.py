@@ -61,6 +61,11 @@ class ModuleRegistry:
         r.register(ModuleSpec("relay", "Relay enumeration", "relay", required_tools=("relayking.py",), outputs=("Relay",)))
         r.register(ModuleSpec("networkhound", "NetworkHound topology", "network", required_tools=("NetworkHound.py",), outputs=("NetworkHound",)))
         r.register(ModuleSpec("gpo", "GPO and SYSVOL", "gpo", dependencies=("ldap",), outputs=("GPO",)))
+        r.register(ModuleSpec("ldap-security", "LDAP security posture", "security", dependencies=("ldap",), outputs=("LDAPSecurity",)))
+        r.register(ModuleSpec("smb-security", "SMB security posture", "security", dependencies=("netexec",), outputs=("SMB",)))
+        r.register(ModuleSpec("trusts", "Trust inventory", "directory", dependencies=("ldap",), outputs=("Trusts",)))
+        r.register(ModuleSpec("acl", "High-value ACL analysis", "security", dependencies=("ldap",), outputs=("ACL",)))
+        r.register(ModuleSpec("laps", "LAPS inventory", "security", dependencies=("ldap",), outputs=("LAPS",)))
         return r
 
 class ExecutionPlanner:

@@ -94,7 +94,7 @@ class Collector:
         attrs_ca = ["cn", "dNSHostName", "certificateTemplates", "cACertificate", "flags", "nTSecurityDescriptor"]
         conn.search(f"CN=Enrollment Services,{base}", "(objectClass=pKIEnrollmentService)", attributes=attrs_ca, controls=security_descriptor_control(sdflags=0x04))
         raw_cas = [dict(e.entry_attributes_as_dict, distinguishedName=e.entry_dn) for e in conn.entries]
-        conn.search(root, "(|(objectClass=user)(objectClass=group)(objectClass=computer)(objectClass=msDS-GroupManagedServiceAccount))", attributes=["objectSid", "sAMAccountName", "displayName", "description", "dNSHostName", "userAccountControl", "memberOf", "member", "objectClass", "objectGUID", "primaryGroupID", "lastLogonTimestamp", "pwdLastSet", "servicePrincipalName", "msDS-AllowedToDelegateTo", "msDS-AllowedToActOnBehalfOfOtherIdentity", "msDS-GroupMSAMembership", "adminCount"])
+        conn.search(root, "(|(objectClass=user)(objectClass=group)(objectClass=computer)(objectClass=msDS-GroupManagedServiceAccount))", attributes=["objectSid", "sAMAccountName", "displayName", "description", "dNSHostName", "userAccountControl", "memberOf", "member", "objectClass", "objectGUID", "primaryGroupID", "lastLogonTimestamp", "pwdLastSet", "servicePrincipalName", "msDS-AllowedToDelegateTo", "msDS-AllowedToActOnBehalfOfOtherIdentity", "msDS-GroupMSAMembership", "adminCount", "ms-Mcs-AdmPwdExpirationTime", "msLAPS-PasswordExpirationTime", "msLAPS-EncryptedPasswordExpirationTime"])
         raw_identities = [dict(e.entry_attributes_as_dict, distinguishedName=e.entry_dn) for e in conn.entries]
         # SCCM publishes site/service metadata below this AD container when
         # the System Management publication is enabled.  Collection is
@@ -125,7 +125,8 @@ class Collector:
             policies_dn = f"CN=Policies,CN=System,{root}"
             conn.search(policies_dn, "(objectClass=groupPolicyContainer)", attributes=[
                 "displayName", "name", "objectGUID", "gPCFileSysPath", "versionNumber",
-                "flags", "whenCreated", "whenChanged", "gPCWQLFilter"])
+                "flags", "whenCreated", "whenChanged", "gPCWQLFilter", "nTSecurityDescriptor"],
+                        controls=security_descriptor_control(sdflags=0x04))
             raw_gpos = [dict(e.entry_attributes_as_dict, distinguishedName=e.entry_dn) for e in conn.entries]
         except Exception:
             raw_gpos = []
@@ -136,6 +137,16 @@ class Collector:
             raw_sites = [dict(e.entry_attributes_as_dict, distinguishedName=e.entry_dn) for e in conn.entries]
             conn.search(sites_dn, "(objectClass=subnet)", attributes=["cn", "siteObject", "description"])
             raw_subnets = [dict(e.entry_attributes_as_dict, distinguishedName=e.entry_dn) for e in conn.entries]
+        except Exception:
+            pass
+        raw_trusts, raw_laps_schema = [], []
+        try:
+            conn.search(f"CN=System,{root}", "(objectClass=trustedDomain)",
+                        attributes=["cn", "trustPartner", "trustDirection", "trustType", "trustAttributes", "securityIdentifier"])
+            raw_trusts = [dict(e.entry_attributes_as_dict, distinguishedName=e.entry_dn) for e in conn.entries]
+            conn.search(f"CN=Schema,{config}", "(|(lDAPDisplayName=ms-Mcs-AdmPwd*)(lDAPDisplayName=msLAPS-*))",
+                        attributes=["lDAPDisplayName", "schemaIDGUID", "searchFlags", "attributeSecurityGUID"])
+            raw_laps_schema = [dict(e.entry_attributes_as_dict, distinguishedName=e.entry_dn) for e in conn.entries]
         except Exception:
             pass
         conn.search(f"CN=Certificate Templates,{base}", "(objectClass=pKICertificateTemplate)", search_scope="LEVEL",
@@ -155,5 +166,6 @@ class Collector:
                     "passwordPolicy": {k: domain_policy[k][0] for k in policy_attrs if k in domain_policy and domain_policy[k]},
                     "cas": raw_cas, "templates": raw_templates, "identities": raw_identities,
                     "sccm": list(deduped_sccm.values()), "gpos": raw_gpos,
-                    "sites": raw_sites, "subnets": raw_subnets}
+                    "sites": raw_sites, "subnets": raw_subnets,
+                    "trusts": raw_trusts, "laps_schema": raw_laps_schema}
         return normalize_directory(self.raw)
