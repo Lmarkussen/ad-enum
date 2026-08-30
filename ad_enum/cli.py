@@ -173,9 +173,12 @@ def main():
         if result_obj.get("hosts"):
             for host in result_obj["hosts"]:
                 inventory.add("observed_hosts", f"{host.get('ip')}:{host.get('host', host.get('name', ''))}", host, "netexec")
-    sccm_result = discover_sccm(inventory)
+    sccm_result = discover_sccm(inventory, collector.raw)
     workspace.write_json(workspace.findings_path("SCCM", "inventory.json"), sccm_result)
     workspace.write_json(workspace.findings_path("SCCM", "topology.json"), sccm_result)
+    workspace.write_json(workspace.raw_dir("SCCM") / "ldap-publication.json", collector.raw.get("sccm", []))
+    workspace.write_json(workspace.findings_path("SCCM", "endpoints.json"), sccm_result.get("publication", {}).get("endpoints", []))
+    workspace.write_json(workspace.findings_path("SCCM", "pxe.json"), sccm_result.get("pxe", {}))
     coverage.add("SCCM / infrastructure discovery", "PASS", f"{len(sccm_result['hosts'])} candidate host(s)")
     relay_findings = []
     relay_result = external_results.get("relay", {})
@@ -297,41 +300,43 @@ def main():
         state = "enabled" if item.enabled else "disabled"
         kerberos_findings.append(NormalizedFinding(
             finding_id=f"kerberos:asrep:{item.identifier}", category="KERBEROS",
-            rule="AS-REP-roastable", title=f"AS-REP roastable user ({state})",
+            rule="AS-REP-roastable", title=f"AS-REP roastable — {item.username} ({state})",
             affected_object=item.username, domain=workspace.domain,
-            sources=[{"source": source} for source in item.sources],
+            sources=[{"source": source, "observed": True} for source in item.sources],
             evidence={"enabled": item.enabled, "preauthentication_required": False,
                       "userAccountControl": item.attributes.get("userAccountControl")},
-            status="single-source", priority="medium", workspace_artifacts=["Kerberos/inventory.json"],
+            status="corroborated" if len(item.sources) > 1 else "single-source", priority="medium", workspace_artifacts=["Kerberos/inventory.json"],
             first_seen_scan=workspace.scan_id, current_scan=workspace.scan_id).as_dict())
     for item in exposures["kerberoast"]:
         state = "enabled" if item.enabled else "disabled"
         kerberos_findings.append(NormalizedFinding(
             finding_id=f"kerberos:spn:{item.identifier}", category="KERBEROS",
-            rule="Kerberoastable-account", title=f"Kerberoastable account ({state})",
+            rule="Kerberoastable-account", title=f"Kerberoastable — {item.username} ({state})",
             affected_object=item.username, domain=workspace.domain,
-            sources=[{"source": source} for source in item.sources],
+            sources=[{"source": source, "observed": True} for source in item.sources],
             evidence={"enabled": item.enabled, "spns": item.spns,
                       "userAccountControl": item.attributes.get("userAccountControl"),
                       "pwdLastSet": item.attributes.get("pwdLastSet")},
-            status="single-source", priority="medium", workspace_artifacts=["Kerberos/inventory.json"],
+            status="corroborated" if len(item.sources) > 1 else "single-source", priority="medium", workspace_artifacts=["Kerberos/inventory.json"],
             first_seen_scan=workspace.scan_id, current_scan=workspace.scan_id).as_dict())
     for item in exposures["password_not_required"]:
         kerberos_findings.append(NormalizedFinding(
             finding_id=f"account:passwd-not-required:{item.identifier}", category="ACCOUNT",
-            rule="PASSWD_NOTREQD", title="Password not required", affected_object=item.username,
-            domain=workspace.domain, sources=[{"source": source} for source in item.sources],
+            rule="PASSWD_NOTREQD", title=f"Password not required — {item.username}", affected_object=item.username,
+            domain=workspace.domain, sources=[{"source": source, "observed": True} for source in item.sources],
             evidence={"enabled": True, "userAccountControl": item.attributes.get("userAccountControl")},
-            status="single-source", priority="medium", workspace_artifacts=["Kerberos/inventory.json"],
+            status="corroborated" if len(item.sources) > 1 else "single-source", priority="medium", workspace_artifacts=["Kerberos/inventory.json"],
             first_seen_scan=workspace.scan_id, current_scan=workspace.scan_id).as_dict())
     delegation_findings = []
     for item in delegation_records:
         if item.kind == "unconstrained" and item.expected_dc: continue
         delegation_findings.append(NormalizedFinding(
             finding_id=f"delegation:{item.kind}:{item.target}", category="DELEGATION", rule=item.kind,
-            title=f"{item.kind.replace('-', ' ').title()} delegation", affected_object=item.target,
-            domain=workspace.domain, sources=[{"source": source} for source in item.sources],
-            evidence=item.as_dict(), status="single-source", priority="medium",
+            title=("RBCD" if item.kind == "rbcd" else
+                   ("Constrained + protocol transition" if item.kind == "constrained" and item.protocol_transition else
+                    f"{item.kind.replace('-', ' ').title()} delegation")), affected_object=item.target,
+            domain=workspace.domain, sources=[{"source": source, "observed": True} for source in item.sources],
+            evidence=item.as_dict(), status="corroborated" if len(item.sources) > 1 else "single-source", priority="medium",
             workspace_artifacts=["Delegation/inventory.json"], first_seen_scan=workspace.scan_id,
             current_scan=workspace.scan_id).as_dict())
     for host in inventory.records.get("observed_hosts", {}).values():
@@ -449,9 +454,14 @@ def main():
                     and item.get("title", "").endswith("(disabled)")):
                 continue
             console.line()
-            console.status(f"  [{item['category']}] {item['title']}", item.get("status"))
+            display_status = item.get("status")
+            if item.get("rule") == "ESC1" and display_status in {"disagreement", "live-confirmed disagreement"}:
+                display_status = "confirmed"
+            console.status(f"  [{item['category']}] {item['title']}", display_status)
             if item["rule"] == "ESC1":
-                console.line(f"    Status ........... {item.get('status', '').upper()}")
+                console.line(f"    Status ........... {display_status.upper()}")
+                if item.get("status") in {"disagreement", "live-confirmed disagreement"}:
+                    console.line("    Note ............. Certipy did not classify this template as ESC1")
             elif item["rule"] == "Kerberoastable-account":
                 spns = item.get("evidence", {}).get("spns", [])
                 console.line(f"    SPNs ............. {len(spns)}")

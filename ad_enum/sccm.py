@@ -1,6 +1,41 @@
 """Read-only SCCM/MECM infrastructure inventory and correlation."""
+import re
 
-def discover(inventory):
+
+def _values(attrs, key):
+    value = attrs.get(key, [])
+    return value if isinstance(value, list) else ([value] if value not in (None, "") else [])
+
+
+def parse_sccm_publication(objects):
+    """Normalize only SCCM-specific publication evidence; no hostname guesses."""
+    result = {"objects": [], "site_codes": [], "roles": [], "endpoints": []}
+    for obj in objects or []:
+        if not isinstance(obj, dict):
+            continue
+        attrs = {str(k).lower(): v for k, v in obj.items()}
+        values = []
+        for key in ("keywords", "mssms-assignment-site-code", "mssms-site-code"):
+            values.extend(str(v) for v in _values(attrs, key))
+        site_codes = sorted({m.upper() for value in values for m in re.findall(r"\b[A-Z][A-Z0-9]{2}\b", value)})
+        for code in site_codes:
+            if code not in result["site_codes"]: result["site_codes"].append(code)
+        roles = [str(v) for v in _values(attrs, "mssms-site-system-roles")]
+        bindings = [str(v) for v in _values(attrs, "servicebindinginformation")]
+        dns = [str(v) for v in (_values(attrs, "servicednsname") + _values(attrs, "dnshostname"))]
+        item = {"dn": obj.get("distinguishedName", ""), "object_class": _values(attrs, "objectclass"),
+                "site_codes": site_codes, "roles": roles, "service_dns_names": dns,
+                "service_bindings": bindings, "raw": obj}
+        result["objects"].append(item)
+        result["roles"].extend(roles)
+        result["endpoints"].extend({"host": host, "source": obj.get("distinguishedName", "")}
+                                    for host in dns if host)
+    result["roles"] = sorted(set(result["roles"]))
+    result["endpoints"] = sorted(result["endpoints"], key=lambda x: (x["host"], x["source"]))
+    result["site_codes"] = sorted(set(result["site_codes"]))
+    return result
+
+def discover(inventory, raw=None):
     hosts = []
     relationships = []
     spn_accounts = []
@@ -29,11 +64,19 @@ def discover(inventory):
             for hint in sorted(set(hints)):
                 relationships.append({"host": name, "role": hint, "confidence": "candidate",
                                       "evidence": {"hints": sorted(set(hints)), "spns": list(spns)}})
+    publication = parse_sccm_publication((raw or {}).get("sccm", []))
+    for endpoint in publication["endpoints"]:
+        for host in hosts:
+            if endpoint["host"].lower() in {host["name"].lower(), host["fqdn"].lower()}:
+                host.setdefault("sccm_evidence", []).append(endpoint)
+                host["role"] = "confirmed-sccm-published-host"
+                host["confidence"] = "sccm-publication"
     return {"hosts": hosts, "relationships": relationships, "spn_accounts": spn_accounts,
+            "publication": publication,
             "site_code": None, "management_points": [], "distribution_points": [],
             "site_servers": [], "sms_providers": [], "sql_servers": [x for x in hosts if x["role"] == "sql-candidate"],
             "pxe": {"status": "UNKNOWN", "evidence": []},
-            "sup_wsus": [], "status": "candidate-discovery-only"}
+            "sup_wsus": [], "status": "sccm-publication-and-inventory"}
 
 
 def normalize_relayking(data):

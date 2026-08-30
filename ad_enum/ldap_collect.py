@@ -96,6 +96,27 @@ class Collector:
         raw_cas = [dict(e.entry_attributes_as_dict, distinguishedName=e.entry_dn) for e in conn.entries]
         conn.search(root, "(|(objectClass=user)(objectClass=group)(objectClass=computer)(objectClass=msDS-GroupManagedServiceAccount))", attributes=["objectSid", "sAMAccountName", "displayName", "description", "dNSHostName", "userAccountControl", "memberOf", "member", "objectClass", "objectGUID", "primaryGroupID", "lastLogonTimestamp", "pwdLastSet", "servicePrincipalName", "msDS-AllowedToDelegateTo", "msDS-AllowedToActOnBehalfOfOtherIdentity", "msDS-GroupMSAMembership", "adminCount"])
         raw_identities = [dict(e.entry_attributes_as_dict, distinguishedName=e.entry_dn) for e in conn.entries]
+        # SCCM publishes site/service metadata below this AD container when
+        # the System Management publication is enabled.  Collection is
+        # best-effort: absence is meaningful and must not break AD scans.
+        system_management = f"CN=System Management,CN=System,{root}"
+        sccm_attrs = ["objectClass", "cn", "name", "displayName", "keywords",
+                      "serviceBindingInformation", "serviceDNSName", "dNSHostName",
+                      "mSSMS-Assignment-Site-Code", "mSSMS-Default-Management-Point",
+                      "mSSMS-Default-Management-Point-Name", "mSSMS-Device-Management-Point",
+                      "mSSMS-Site-Code", "mSSMS-Site-System-Roles", "mSSMS-Version",
+                      "netbootSCPBL", "netbootAnswer", "netbootSCP"]
+        raw_sccm = []
+        try:
+            conn.search(system_management, "(objectClass=*)", attributes=sccm_attrs)
+            raw_sccm = [dict(e.entry_attributes_as_dict, distinguishedName=e.entry_dn) for e in conn.entries]
+        except Exception:
+            raw_sccm = []
+        try:
+            conn.search(root, "(objectClass=serviceConnectionPoint)", attributes=sccm_attrs)
+            raw_sccm.extend(dict(e.entry_attributes_as_dict, distinguishedName=e.entry_dn) for e in conn.entries)
+        except Exception:
+            pass
         conn.search(f"CN=Certificate Templates,{base}", "(objectClass=pKICertificateTemplate)", search_scope="LEVEL",
                     attributes=["cn", "displayName", "objectGUID", "objectSid", "msPKI-Certificate-Name-Flag", "msPKI-Enrollment-Flag",
                                 "pKIExtendedKeyUsage", "msPKI-Certificate-Application-Policy", "msPKI-RA-Signature", "nTSecurityDescriptor"],
@@ -104,5 +125,6 @@ class Collector:
         self._close(conn, state)
         self.raw = {"defaultNamingContext": root, "configurationNamingContext": config,
                     "passwordPolicy": {k: domain_policy[k][0] for k in policy_attrs if k in domain_policy and domain_policy[k]},
-                    "cas": raw_cas, "templates": raw_templates, "identities": raw_identities}
+                    "cas": raw_cas, "templates": raw_templates, "identities": raw_identities,
+                    "sccm": raw_sccm}
         return normalize_directory(self.raw)
