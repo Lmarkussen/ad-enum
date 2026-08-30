@@ -406,6 +406,11 @@ def main():
         console.line("  None")
     else:
         for item in all_findings:
+            # Disabled Kerberoastable principals remain in JSON evidence, but
+            # should not look like currently actionable findings in normal UI.
+            if (item.get("rule") == "Kerberoastable-account"
+                    and item.get("title", "").endswith("(disabled)")):
+                continue
             console.line()
             console.status(f"  [{item['category']}] {item['title']}", item.get("status"))
             if item["rule"] == "ESC1":
