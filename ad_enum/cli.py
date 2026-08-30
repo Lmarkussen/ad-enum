@@ -30,6 +30,7 @@ from .anonymous import probe_anonymous_ldap, probe_anonymous_smb
 from .reporting.html import write_html_report
 from .recon import (normalize_mssql, normalize_dfs, normalize_services,
                     normalize_trust_context, build_privilege_paths)
+from .service_probe import probe_known_services
 
 
 CATEGORY_ORDER = ("ADCS", "POLICY", "KERBEROS", "ACCOUNT", "DELEGATION",
@@ -630,6 +631,13 @@ def main():
     console.complete("DFS analysis complete")
     console.activity("Checking remote management exposure...")
     service_inventory = normalize_services([x.attributes for x in inventory.records.get("observed_hosts", {}).values()])
+    service_targets = list(context.targets)
+    service_targets.extend({"host": x.get("host"), "ip": x.get("ip")} for x in smb_inventory)
+    service_probes = probe_known_services(service_targets, timeout=min(a.timeout, 2), max_hosts=64)
+    service_inventory.extend(service_probes)
+    service_inventory = sorted({(x.get("host"), x.get("service"), x.get("port")): x
+                                for x in service_inventory}.values(),
+                               key=lambda x: (str(x.get("host", "")).lower(), str(x.get("service", "")), x.get("port") or 0))
     workspace.write_json(workspace.findings_path("Services", "inventory.json"), service_inventory)
     workspace.write_json(workspace.findings_path("Services", "findings.json"), [])
     workspace.write_text(workspace.module_dir("Services") / "findings.txt", "")
