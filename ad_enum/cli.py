@@ -16,7 +16,8 @@ from .inventory import native_inventory, DomainInventory, build_targets, sensiti
 from .sccm import discover as discover_sccm, normalize_relayking, probe_management_points
 from .network import build_dns_map
 from .gpo import normalize_gpos, collect_sysvol, collect_netlogon, inspect_file
-from .posture import normalize_smb, normalize_trusts, normalize_gpo_acls, normalize_laps
+from .posture import (normalize_smb, normalize_trusts, normalize_gpo_acls, normalize_laps,
+                      attach_gpo_links, normalize_security_descriptors, analyze_effective_acls)
 from .kerberos import roastable
 from .delegation import enumerate_delegation, enumerate_gmsa
 from .core.console import Console
@@ -45,7 +46,10 @@ def main():
     p.add_argument("--modules", default="all", help="comma-separated modules (default: all read-only collectors)")
     p.add_argument("--profile", default="default")
     p.add_argument("--certipy-json", help="optional Certipy -json result for corroboration")
-    p.add_argument("--output-dir", default="./tool")
+    # The output directory is the parent of the canonical domain workspace.
+    # Keeping the default as the current directory makes new scans land in
+    # ./<canonical-domain>/ while preserving the explicit --output-dir API.
+    p.add_argument("--output-dir", default=".")
     a = p.parse_args(argv)
     console = Console(no_color=a.no_color, verbose=a.verbose, debug=a.verbose)
     if a.password is None:
@@ -228,8 +232,18 @@ def main():
     workspace.write_json(workspace.findings_path("SCCM", "endpoints.json"), sccm_result.get("endpoint_probes", []))
     workspace.write_json(workspace.findings_path("SCCM", "pxe.json"), sccm_result.get("pxe", {}))
     coverage.add("SCCM / infrastructure discovery", "PASS", f"{len(sccm_result['hosts'])} candidate host(s)")
-    gpos = normalize_gpos(collector.raw.get("gpos", []))
+    gpos = attach_gpo_links(normalize_gpos(collector.raw.get("gpos", [])),
+                            collector.raw.get("gpo_links", []))
     gpo_acls = normalize_gpo_acls(collector.raw.get("gpos", []))
+    gpo_by_name = {str(x.get("gpo", "")).lower(): x for x in gpos}
+    for acl in gpo_acls:
+        scope = gpo_by_name.get(str(acl.get("gpo", "")).lower(), {}).get("scope", {})
+        acl["scope"] = scope
+    gpo_acl_observations = analyze_effective_acls(gpo_acls, inventory)
+    for observation in gpo_acl_observations:
+        observation["scope"] = gpo_by_name.get(str(observation["target"]).lower(), {}).get("scope", {})
+    high_value_acls = normalize_security_descriptors(collector.raw.get("security_descriptors", []))
+    high_value_acl_observations = analyze_effective_acls(high_value_acls, inventory)
     sysvol = collect_sysvol(context, gpos)
     netlogon = collect_netlogon(context)
     gpo_findings = []
@@ -240,7 +254,9 @@ def main():
         safe = dict(item); safe.pop("content", None)
         workspace.write_json(workspace.raw_dir("GPO") / (str(item["gpo_guid"]).strip("{}").lower() + ".json"), safe)
     workspace.write_json(workspace.findings_path("GPO", "inventory.json"), gpos)
+    workspace.write_json(workspace.findings_path("GPO", "links.json"), collector.raw.get("gpo_links", []))
     workspace.write_json(workspace.findings_path("GPO", "acl.json"), gpo_acls)
+    workspace.write_json(workspace.findings_path("GPO", "effective-rights.json"), gpo_acl_observations)
     workspace.write_json(workspace.findings_path("GPO", "policies.json"), {"status": sysvol.get("status"), "error": sysvol.get("error", ""), "files": [{k: v for k, v in x.items() if k != "content"} for x in sysvol.get("files", [])]})
     workspace.write_json(workspace.findings_path("GPO", "findings.json"), gpo_findings)
     sysvol_dir = workspace.module_dir("GPO") / "SYSVOL"
@@ -269,9 +285,31 @@ def main():
                          for r in inventory.records.get("groups", {}).values()
                          if str(r.attributes.get("sAMAccountName") or r.attributes.get("name") or "").lower() in privileged_names]
     workspace.write_json(workspace.findings_path("ACL", "privileged-groups.json"), privileged_groups)
-    workspace.write_json(workspace.findings_path("ACL", "inventory.json"), {"gpo_acls": gpo_acls})
-    workspace.write_json(workspace.findings_path("ACL", "findings.json"), [])
-    workspace.write_text(workspace.module_dir("ACL") / "findings.txt", "")
+    workspace.write_json(workspace.findings_path("ACL", "inventory.json"),
+                         {"gpo_acls": gpo_acls, "high_value_acls": high_value_acls})
+    acl_findings = []
+    for observation in gpo_acl_observations + high_value_acl_observations:
+        target = observation["target"]
+        rights = ", ".join(observation["effective_rights"])
+        is_gpo = observation in gpo_acl_observations
+        category, rule = ("GPO", "gpo-modify") if is_gpo else ("ACL", "high-value-right")
+        title = (f"Low-privilege principal can modify GPO — {target}" if is_gpo
+                 else f"Low-privilege principal has dangerous rights — {target}")
+        acl_findings.append(NormalizedFinding(
+            finding_id=f"{category.lower()}:{rule}:{target}:{observation['principal_sid']}",
+            category=category, rule=rule, title=title, affected_object=target,
+            domain=workspace.domain,
+            sources=[{"source": "native-ldap", "observed": True}],
+            evidence={"principal_sid": observation["principal_sid"], "effective_rights": rights,
+                      "principal_context": observation["principal_context"],
+                      "scope": observation.get("scope", {}), "aces": observation["aces"]},
+            status="single-source", priority="high",
+            workspace_artifacts=["GPO/effective-rights.json" if is_gpo else "ACL/inventory.json"],
+            first_seen_scan=workspace.scan_id, current_scan=workspace.scan_id).as_dict())
+    workspace.write_json(workspace.findings_path("ACL", "findings.json"), acl_findings)
+    workspace.write_text(workspace.module_dir("ACL") / "findings.txt",
+                         "\n".join(f"[{x['category']}] {x['title']}" for x in acl_findings) +
+                         ("\n" if acl_findings else ""))
     coverage.add("SMB / signing posture", "PASS" if smb_inventory else "NOT CHECKED", f"{len(smb_inventory)} host(s)")
     coverage.add("LDAP / signing and channel binding", "NOT CHECKED", "posture unknown; no direct safe proof")
     coverage.add("Trusts / LDAP inventory", "PASS", f"{len(trust_inventory)} trust(s)")
@@ -457,7 +495,9 @@ def main():
             status="single-source", priority="high", workspace_artifacts=["GPO/findings.json"],
             first_seen_scan=workspace.scan_id, current_scan=workspace.scan_id)
         item["normalized"] = gpo_finding.as_dict()
-    all_findings = finding_records + policy_findings + description_findings + kerberos_findings + delegation_findings + relay_findings + smb_findings + [x["normalized"] for x in gpo_findings]
+    all_findings = (finding_records + policy_findings + description_findings + kerberos_findings +
+                    delegation_findings + relay_findings + smb_findings + acl_findings +
+                    [x["normalized"] for x in gpo_findings])
     workspace.write_json(workspace.findings_path("vulnerabilities", "findings.json"), all_findings)
     workspace.write_text(workspace.findings_path("vulnerabilities", "findings.txt"),
                           "\n".join(f"[{x['category']}] {x['title']}" for x in all_findings) + "\n")
@@ -575,7 +615,7 @@ def main():
                 console.line(f"    Status ........... {item.get('status', '').upper()}")
     console.line()
     console.heading("Workspace")
-    console.line(console.paint(f"  tool/{workspace.domain}/", "dim"))
+    console.line(console.paint(f"  {workspace.domain}/", "dim"))
     if collector.kerberos_session:
         collector.kerberos_session.close()
     return 0

@@ -1,6 +1,7 @@
 from ad_enum.network import build_dns_map, parse_networkhound
 from ad_enum.gpo import inspect_file, normalize_gpos
-from ad_enum.posture import normalize_trusts, normalize_laps
+from ad_enum.posture import (normalize_trusts, normalize_laps, normalize_gpo_links,
+                             attach_gpo_links, analyze_effective_acls)
 from ad_enum.inventory import DomainInventory
 
 
@@ -48,3 +49,28 @@ def test_trust_and_laps_normalization_preserve_observed_values():
     laps = normalize_laps([{"lDAPDisplayName": ["msLAPS-Password"]}], inv)
     assert laps["families"]["windows"] is True
     assert laps["passwords_retrieved"] is False
+
+
+def test_gpo_links_parse_scope_options_and_attach():
+    links = normalize_gpo_links([{
+        "distinguishedName": "OU=Workstations,DC=example,DC=test",
+        "targetType": "ou", "gPLink": ["[LDAP://cn={ABC},cn=policies,cn=system,dc=x;0]"],
+        "gPOptions": ["0"]}])
+    assert links[0]["links"][0]["guid"] == "abc"
+    assert links[0]["links"][0]["enabled"] is True
+    gpos = attach_gpo_links([{"guid": "{ABC}", "display_name": "Workstations"}], [{
+        "distinguishedName": "OU=Workstations,DC=example,DC=test", "targetType": "ou",
+        "gPLink": "[LDAP://cn={ABC},cn=policies,cn=system,dc=x;0]", "gPOptions": "0"}])
+    assert gpos[0]["scope"]["targets"] == ["OU=Workstations,DC=example,DC=test"]
+
+
+def test_effective_gpo_rights_require_low_privilege_and_honor_deny():
+    inv = DomainInventory()
+    inv.add("users", "S-1-5-21-1-2-3-1101", {
+        "sAMAccountName": "alice", "objectClass": ["user"]}, "native-ldap")
+    rows = [{"target": "Workstations", "aces": [
+        {"sid": "S-1-5-21-1-2-3-1101", "kind": "allow", "mask": 0x40000000,
+         "applies_to_object": True},
+        {"sid": "S-1-5-21-1-2-3-1101", "kind": "deny", "mask": 0x40000000,
+         "applies_to_object": True}]}]
+    assert analyze_effective_acls(rows, inv) == []

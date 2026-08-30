@@ -1,4 +1,5 @@
 """Native security-posture normalizers for LDAP, SMB, trusts, ACLs, and LAPS."""
+import re
 from .security import parse_security_descriptor_safe
 
 def _one(value, default=""):
@@ -31,6 +32,168 @@ def normalize_gpo_acls(rows):
                                  "inherited": a.inherited, "applies_to_object": a.applies_to_object} for a in aces],
                        "warnings": warnings})
     return result
+
+
+def normalize_security_descriptors(rows):
+    """Normalize the narrow high-value descriptor collection from LDAP."""
+    result = []
+    for row in rows or []:
+        if not isinstance(row, dict): continue
+        sd = _one(row.get("nTSecurityDescriptor"), b"")
+        aces, warnings = parse_security_descriptor_safe(sd)
+        name = _one(row.get("sAMAccountName") or row.get("cn") or row.get("name"))
+        result.append({"target": name or row.get("distinguishedName", ""),
+                       "dn": row.get("distinguishedName", ""),
+                       "sid": _one(row.get("objectSid")),
+                       "object_class": row.get("objectClass", []),
+                       "aces": [{"sid": a.sid, "kind": a.kind, "mask": a.mask,
+                                 "object_type": str(a.object_type) if a.object_type else None,
+                                 "inherited": a.inherited, "applies_to_object": a.applies_to_object}
+                                for a in aces],
+                       "warnings": warnings})
+    return result
+
+
+def normalize_gpo_links(rows):
+    """Parse gPLink/gPOptions without attempting full policy processing.
+
+    AD stores links as a bracketed list of LDAP URLs with an option suffix.
+    Bit 0 disables a link and bit 1 marks it enforced.  gPOptions bit 0 is
+    the block-inheritance flag on the target container.
+    """
+    result = []
+    pattern = re.compile(r"\[LDAP://([^;\]]+);(\d+)\]", re.I)
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        def first(key, default=""):
+            value = row.get(key, default)
+            return value[0] if isinstance(value, list) and value else (default if value is None else value)
+        raw = first("gPLink") or ""
+        links = []
+        for order, match in enumerate(pattern.finditer(str(raw)), 1):
+            dn, option_text = match.groups()
+            try: options = int(option_text)
+            except ValueError: options = 0
+            guid_match = re.search(r"CN=\{([^}]+)\}", dn, re.I)
+            links.append({"guid": (guid_match.group(1) if guid_match else "").lower(),
+                          "gpo_dn": dn, "link_order": order, "options": options,
+                          "enabled": not bool(options & 1), "enforced": bool(options & 2)})
+        target_dn = str(row.get("distinguishedName", ""))
+        result.append({"target_dn": target_dn, "target_type": first("targetType", "unknown"),
+                       "links": links, "block_inheritance": bool(int(first("gPOptions", 0) or 0) & 1),
+                       "raw_gPLink": raw, "raw_gPOptions": first("gPOptions", 0)})
+    return result
+
+
+def attach_gpo_links(gpos, link_rows):
+    """Attach scope context to normalized GPO records by GUID."""
+    by_guid = {str(g.get("guid", "")).strip("{}").lower(): g for g in gpos or []}
+    for gpo in gpos or []:
+        gpo["links"] = []
+    for target in normalize_gpo_links(link_rows):
+        for link in target["links"]:
+            gpo = by_guid.get(link["guid"])
+            if not gpo:
+                continue
+            gpo["links"].append({**link, "target_dn": target["target_dn"],
+                                  "target_type": target["target_type"],
+                                  "block_inheritance": target["block_inheritance"]})
+    for gpo in gpos or []:
+        enabled = [x for x in gpo["links"] if x["enabled"]]
+        gpo["scope"] = {"linked": bool(gpo["links"]), "enabled_links": len(enabled),
+                         "enforced_links": sum(x["enforced"] for x in enabled),
+                         "targets": [x["target_dn"] for x in enabled],
+                         "high_impact": any(_high_impact_scope(x["target_dn"]) for x in enabled)}
+    return gpos
+
+
+def _high_impact_scope(dn):
+    text = str(dn).upper()
+    return ("DC=" in text and text.startswith("DC=") or
+            "OU=DOMAIN CONTROLLERS" in text or
+            "OU=ADMIN" in text or "OU=PRIVILEG" in text)
+
+
+_GENERIC_WRITE = 0x40000000
+_WRITE_PROPERTY = 0x00000020
+_DANGEROUS = ((0x10000000, "GenericAll"), (_GENERIC_WRITE, "GenericWrite"),
+              (0x00040000, "WriteDacl"), (0x00080000, "WriteOwner"),
+              (_WRITE_PROPERTY, "WriteProperty"))
+
+
+def _inventory_maps(inventory):
+    records = {}
+    for kind_records in inventory.records.values():
+        for record in kind_records.values():
+            records[str(record.identifier).lower()] = record
+            dn = str(record.attributes.get("distinguishedName", "")).lower()
+            if dn: records[dn] = record
+    return records
+
+
+def _principal_is_low_priv(sid, inventory, maps):
+    sid = str(sid)
+    if sid in {"S-1-1-0", "S-1-5-11"} or sid.rsplit("-", 1)[-1] in {"513", "515"}:
+        return True, "broad-or-domain-users"
+    record = maps.get(sid.lower())
+    if not record:
+        return False, "unknown"
+    name = str(record.attributes.get("sAMAccountName") or record.attributes.get("name") or "").lower()
+    privileged = {"domain admins", "enterprise admins", "administrators", "schema admins",
+                  "account operators", "server operators", "backup operators", "dnsadmins",
+                  "group policy creator owners", "domain controllers"}
+    if name in privileged or sid.rsplit("-", 1)[-1] in {"512", "519", "544", "548", "549", "550"}:
+        return False, "expected-privileged"
+    classes = {str(x).lower() for x in (record.attributes.get("objectClass") or [])}
+    if "user" in classes or "computer" in classes:
+        return True, "ordinary-identity"
+    # A custom group is low-privilege only when its known membership reaches
+    # an ordinary identity.  Empty/unknown groups remain unresolved.
+    members = record.attributes.get("member") or []
+    for member_dn in members if isinstance(members, list) else [members]:
+        child = maps.get(str(member_dn).lower())
+        if child:
+            child_low, _ = _principal_is_low_priv(child.identifier, inventory, maps)
+            if child_low: return True, "nested-ordinary-membership"
+    return False, "unresolved-group"
+
+
+def analyze_effective_acls(rows, inventory, *, target_filter=None):
+    """Return narrow, explainable effective dangerous-right observations.
+
+    Denies are applied before allows for the relevant principal.  This is a
+    conservative finding-oriented model; raw ACEs remain available for a
+    complete Windows security-descriptor audit.
+    """
+    maps = _inventory_maps(inventory)
+    observations = []
+    for row in rows or []:
+        target = str(row.get("gpo") or row.get("target") or row.get("dn") or "")
+        if target_filter and not target_filter(row): continue
+        aces = row.get("aces", [])
+        by_sid = {}
+        for ace in aces:
+            sid = str(ace.get("sid", ""))
+            if not sid or ace.get("kind") not in {"allow", "deny"} or not ace.get("applies_to_object", True): continue
+            by_sid.setdefault(sid, []).append(ace)
+        for sid, principal_aces in by_sid.items():
+            low, context = _principal_is_low_priv(sid, inventory, maps)
+            if not low: continue
+            denied = 0; allowed = 0; evidence = []
+            for ace in principal_aces:
+                mask = int(ace.get("mask", 0) or 0)
+                if ace["kind"] == "deny": denied |= mask
+                else: allowed |= mask
+                evidence.append(ace)
+            effective = allowed & ~denied
+            rights = [name for bit, name in _DANGEROUS if effective & bit]
+            if rights:
+                observations.append({"target": target, "principal_sid": sid,
+                                      "principal_context": context, "low_privilege": True,
+                                      "effective_rights": rights, "effective_mask": effective,
+                                      "aces": evidence})
+    return observations
 
 def normalize_laps(schema_rows, inventory):
     schema = sorted({_one(row.get("lDAPDisplayName")) for row in schema_rows or [] if _one(row.get("lDAPDisplayName"))})

@@ -130,6 +130,23 @@ class Collector:
             raw_gpos = [dict(e.entry_attributes_as_dict, distinguishedName=e.entry_dn) for e in conn.entries]
         except Exception:
             raw_gpos = []
+        # GPO link metadata lives on the domain, OU, and (occasionally) site
+        # objects rather than on the groupPolicyContainer itself.
+        raw_gpo_links = []
+        try:
+            link_queries = [
+                (root, "domain", "(objectClass=domainDNS)"),
+                (root, "ou", "(objectClass=organizationalUnit)"),
+                (f"CN=Sites,{config}", "site", "(objectClass=site)"),
+            ]
+            for link_base, target_type, link_filter in link_queries:
+                conn.search(link_base, link_filter, attributes=[
+                    "distinguishedName", "name", "ou", "cn", "gPLink", "gPOptions"])
+                raw_gpo_links.extend(dict(e.entry_attributes_as_dict,
+                                          distinguishedName=e.entry_dn,
+                                          targetType=target_type) for e in conn.entries)
+        except Exception:
+            raw_gpo_links = []
         raw_sites, raw_subnets = [], []
         try:
             sites_dn = f"CN=Sites,{config}"
@@ -139,6 +156,32 @@ class Collector:
             raw_subnets = [dict(e.entry_attributes_as_dict, distinguishedName=e.entry_dn) for e in conn.entries]
         except Exception:
             pass
+        # Keep security descriptors for a deliberately narrow set of
+        # high-value objects.  This supports ACL analysis without turning a
+        # normal scan into an all-domain ACE dump.
+        raw_security_descriptors = []
+        try:
+            targets = [(root, "domain")]
+            targets.extend((str(x.get("distinguishedName", "")), "identity")
+                           for x in raw_identities
+                           if str(x.get("distinguishedName", "")) and (
+                               "group" in {str(v).lower() for v in x.get("objectClass", [])}
+                               or "computer" in {str(v).lower() for v in x.get("objectClass", [])}))
+            seen = set()
+            for target_dn, target_kind in targets:
+                if target_dn.lower() in seen:
+                    continue
+                seen.add(target_dn.lower())
+                conn.search(target_dn, "(objectClass=*)", search_scope="BASE",
+                            attributes=["objectClass", "cn", "name", "sAMAccountName",
+                                        "objectSid", "objectGUID", "distinguishedName",
+                                        "nTSecurityDescriptor"],
+                            controls=security_descriptor_control(sdflags=0x04))
+                raw_security_descriptors.extend(dict(e.entry_attributes_as_dict,
+                                                     distinguishedName=e.entry_dn,
+                                                     targetKind=target_kind) for e in conn.entries)
+        except Exception:
+            raw_security_descriptors = []
         raw_trusts, raw_laps_schema = [], []
         try:
             conn.search(f"CN=System,{root}", "(objectClass=trustedDomain)",
@@ -166,6 +209,7 @@ class Collector:
                     "passwordPolicy": {k: domain_policy[k][0] for k in policy_attrs if k in domain_policy and domain_policy[k]},
                     "cas": raw_cas, "templates": raw_templates, "identities": raw_identities,
                     "sccm": list(deduped_sccm.values()), "gpos": raw_gpos,
+                    "gpo_links": raw_gpo_links, "security_descriptors": raw_security_descriptors,
                     "sites": raw_sites, "subnets": raw_subnets,
                     "trusts": raw_trusts, "laps_schema": raw_laps_schema}
         return normalize_directory(self.raw)
