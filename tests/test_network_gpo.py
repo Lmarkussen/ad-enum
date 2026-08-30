@@ -64,6 +64,17 @@ def test_gpo_links_parse_scope_options_and_attach():
     assert gpos[0]["scope"]["targets"] == ["OU=Workstations,DC=example,DC=test"]
 
 
+def test_gpo_link_disabled_enforced_and_block_inheritance_flags():
+    result = normalize_gpo_links([{
+        "distinguishedName": "DC=example,DC=test", "targetType": "domain",
+        "gPLink": "[LDAP://cn={ONE},cn=policies,cn=system,dc=x;1]"
+                   "[LDAP://cn={TWO},cn=policies,cn=system,dc=x;2]",
+        "gPOptions": "1"}])[0]
+    assert result["block_inheritance"] is True
+    assert result["links"][0]["enabled"] is False
+    assert result["links"][1]["enforced"] is True
+
+
 def test_effective_gpo_rights_require_low_privilege_and_honor_deny():
     inv = DomainInventory()
     inv.add("users", "S-1-5-21-1-2-3-1101", {

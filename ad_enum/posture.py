@@ -29,6 +29,7 @@ def normalize_gpo_acls(rows):
         result.append({"gpo": name, "dn": row.get("distinguishedName", ""),
                        "aces": [{"sid": a.sid, "kind": a.kind, "mask": a.mask,
                                  "object_type": str(a.object_type) if a.object_type else None,
+                                 "inherited_object_type": str(a.inherited_object_type) if a.inherited_object_type else None,
                                  "inherited": a.inherited, "applies_to_object": a.applies_to_object} for a in aces],
                        "warnings": warnings})
     return result
@@ -48,6 +49,7 @@ def normalize_security_descriptors(rows):
                        "object_class": row.get("objectClass", []),
                        "aces": [{"sid": a.sid, "kind": a.kind, "mask": a.mask,
                                  "object_type": str(a.object_type) if a.object_type else None,
+                                 "inherited_object_type": str(a.inherited_object_type) if a.inherited_object_type else None,
                                  "inherited": a.inherited, "applies_to_object": a.applies_to_object}
                                 for a in aces],
                        "warnings": warnings})
@@ -132,8 +134,12 @@ def _inventory_maps(inventory):
     return records
 
 
-def _principal_is_low_priv(sid, inventory, maps):
+def _principal_is_low_priv(sid, inventory, maps, seen=None):
     sid = str(sid)
+    seen = set() if seen is None else seen
+    if sid.lower() in seen:
+        return False, "cyclic-group-membership"
+    seen.add(sid.lower())
     if sid in {"S-1-1-0", "S-1-5-11"} or sid.rsplit("-", 1)[-1] in {"513", "515"}:
         return True, "broad-or-domain-users"
     record = maps.get(sid.lower())
@@ -154,7 +160,7 @@ def _principal_is_low_priv(sid, inventory, maps):
     for member_dn in members if isinstance(members, list) else [members]:
         child = maps.get(str(member_dn).lower())
         if child:
-            child_low, _ = _principal_is_low_priv(child.identifier, inventory, maps)
+            child_low, _ = _principal_is_low_priv(child.identifier, inventory, maps, seen)
             if child_low: return True, "nested-ordinary-membership"
     return False, "unresolved-group"
 
@@ -182,6 +188,10 @@ def analyze_effective_acls(rows, inventory, *, target_filter=None):
             if not low: continue
             denied = 0; allowed = 0; evidence = []
             for ace in principal_aces:
+                object_class_guid = row.get("object_class_guid")
+                if (ace.get("object_type") and object_class_guid and
+                        str(ace["object_type"]).lower() != str(object_class_guid).lower()):
+                    continue
                 mask = int(ace.get("mask", 0) or 0)
                 if ace["kind"] == "deny": denied |= mask
                 else: allowed |= mask
