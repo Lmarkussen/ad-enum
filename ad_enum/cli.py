@@ -142,20 +142,7 @@ def main():
     workspace.write_json(workspace.findings_path("NetworkHound", "inventory.json"),
                          networkhound_result.get("inventory", {}) if isinstance(networkhound_result, dict) else {})
     workspace.write_json(workspace.findings_path("NetworkHound", "dns-map.json"), dns_map)
-    smb_inventory = normalize_smb(inventory)
-    workspace.write_json(workspace.findings_path("SMB", "inventory.json"), smb_inventory)
-    unsigned = [x for x in smb_inventory if x.get("smb_signing") is False]
-    smb_findings = []
-    if unsigned:
-        smb_findings.append(NormalizedFinding(
-            finding_id="smb:signing-not-required", category="SMB", rule="signing-not-required",
-            title=f"SMB signing not required — {len(unsigned)} host(s)", affected_object=workspace.domain,
-            domain=workspace.domain, sources=[{"source": source, "observed": True} for source in sorted({s for x in unsigned for s in x["sources"]})],
-            evidence={"hosts": unsigned}, status="single-source", priority="medium",
-            workspace_artifacts=["SMB/inventory.json"], first_seen_scan=workspace.scan_id,
-            current_scan=workspace.scan_id).as_dict())
-    workspace.write_json(workspace.findings_path("SMB", "findings.json"), smb_findings)
-    workspace.write_text(workspace.module_dir("SMB") / "findings.txt", "\n".join(f"[{x['category']}] {x['title']}" for x in smb_findings) + ("\n" if smb_findings else ""))
+    smb_inventory, smb_findings = [], []
     trust_inventory = normalize_trusts(collector.raw.get("trusts", []))
     workspace.write_json(workspace.findings_path("Trusts", "inventory.json"), trust_inventory)
     workspace.write_json(workspace.findings_path("Trusts", "findings.json"), [])
@@ -209,6 +196,21 @@ def main():
         if result_obj.get("hosts"):
             for host in result_obj["hosts"]:
                 inventory.add("observed_hosts", f"{host.get('ip')}:{host.get('host', host.get('name', ''))}", host, "netexec")
+    # NetExec host observations are added above; normalize SMB only after
+    # that merge so the module cannot emit an empty inventory.
+    smb_inventory = normalize_smb(inventory)
+    workspace.write_json(workspace.findings_path("SMB", "inventory.json"), smb_inventory)
+    unsigned = [x for x in smb_inventory if x.get("smb_signing") is False]
+    if unsigned:
+        smb_findings.append(NormalizedFinding(
+            finding_id="smb:signing-not-required", category="SMB", rule="signing-not-required",
+            title=f"SMB signing not required — {len(unsigned)} host(s)", affected_object=workspace.domain,
+            domain=workspace.domain, sources=[{"source": source, "observed": True} for source in sorted({s for x in unsigned for s in x["sources"]})],
+            evidence={"hosts": unsigned}, status="single-source", priority="medium",
+            workspace_artifacts=["SMB/inventory.json"], first_seen_scan=workspace.scan_id,
+            current_scan=workspace.scan_id).as_dict())
+    workspace.write_json(workspace.findings_path("SMB", "findings.json"), smb_findings)
+    workspace.write_text(workspace.module_dir("SMB") / "findings.txt", "\n".join(f"[{x['category']}] {x['title']}" for x in smb_findings) + ("\n" if smb_findings else ""))
     sccm_result = discover_sccm(inventory, collector.raw, dns_map)
     sccm_result["endpoint_probes"] = probe_management_points(sccm_result.get("management_points", []), a.timeout)
     for mp in sccm_result.get("management_points", []):
