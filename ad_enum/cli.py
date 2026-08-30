@@ -28,6 +28,8 @@ from .core.console import Console
 from .core.coverage import CoverageReport
 from .anonymous import probe_anonymous_ldap, probe_anonymous_smb
 from .reporting.html import write_html_report
+from .recon import (normalize_mssql, normalize_dfs, normalize_services,
+                    normalize_trust_context, build_privilege_paths)
 
 
 CATEGORY_ORDER = ("ADCS", "POLICY", "KERBEROS", "ACCOUNT", "DELEGATION",
@@ -561,6 +563,52 @@ def main():
                        "SQL association", "SUP / WSUS", "SCCM ACL", "DP content metadata"):
         coverage.add(f"SCCM / {capability}", "NOT TESTED", "requires live role evidence")
     console.complete("SCCM analysis complete")
+    console.activity("Enumerating MSSQL infrastructure...")
+    mssql_inventory = normalize_mssql(inventory)
+    workspace.write_json(workspace.findings_path("MSSQL", "inventory.json"), mssql_inventory)
+    workspace.write_json(workspace.findings_path("MSSQL", "instances.json"), mssql_inventory)
+    workspace.write_json(workspace.findings_path("MSSQL", "relationships.json"),
+                         [x for x in mssql_inventory if x.get("sccm")])
+    workspace.write_json(workspace.findings_path("MSSQL", "findings.json"), [])
+    workspace.write_text(workspace.module_dir("MSSQL") / "findings.txt", "")
+    coverage.add("MSSQL / SPN instance inventory", "PASS" if mssql_inventory else "PARTIAL",
+                 f"{len(mssql_inventory)} instance candidate(s)")
+    console.complete("MSSQL analysis complete")
+    console.activity("Enumerating DFS infrastructure...")
+    dfs_inventory = normalize_dfs(collector.raw.get("dfs", []))
+    workspace.write_json(workspace.findings_path("DFS", "namespaces.json"), dfs_inventory)
+    workspace.write_json(workspace.findings_path("DFS", "targets.json"),
+                         [{"namespace": x["namespace"], "path": x["path"], "target": target,
+                           "source": x["source"]} for x in dfs_inventory for target in x["targets"]])
+    workspace.write_json(workspace.findings_path("DFS", "findings.json"), [])
+    workspace.write_text(workspace.module_dir("DFS") / "findings.txt", "")
+    coverage.add("DFS / namespace inventory", "PASS" if dfs_inventory else "PARTIAL",
+                 f"{len(dfs_inventory)} namespace/link observation(s)")
+    console.complete("DFS analysis complete")
+    console.activity("Checking remote management exposure...")
+    service_inventory = normalize_services([x.attributes for x in inventory.records.get("observed_hosts", {}).values()])
+    workspace.write_json(workspace.findings_path("Services", "inventory.json"), service_inventory)
+    workspace.write_json(workspace.findings_path("Services", "findings.json"), [])
+    workspace.write_text(workspace.module_dir("Services") / "findings.txt", "")
+    coverage.add("Services / bounded exposure inventory", "PASS" if service_inventory else "PARTIAL",
+                 f"{len(service_inventory)} service observation(s)")
+    console.complete("Service exposure analysis complete")
+    console.activity("Analyzing trust relationships...")
+    trust_context = normalize_trust_context(collector.raw.get("trusts", []))
+    workspace.write_json(workspace.findings_path("Trusts", "inventory.json"), trust_context)
+    workspace.write_json(workspace.findings_path("Trusts", "foreign-principals.json"),
+                         collector.raw.get("foreign_security_principals", []))
+    coverage.add("Trusts / relationship context", "PASS", f"{len(trust_context)} trust(s)")
+    console.complete("Trust analysis complete")
+    console.activity("Correlating privilege paths...")
+    path_edges = collector.raw.get("privilege_edges", [])
+    paths = build_privilege_paths(path_edges)
+    workspace.write_json(workspace.findings_path("Paths", "inventory.json"), paths)
+    workspace.write_json(workspace.findings_path("Paths", "findings.json"), [])
+    workspace.write_text(workspace.module_dir("Paths") / "findings.txt", "")
+    coverage.add("Paths / bounded privilege correlation", "PASS" if path_edges else "PARTIAL",
+                 f"{len(paths)} bounded path(s)")
+    console.complete("Privilege-path correlation complete")
     expected_acl_principals = {
         str(record.identifier) for record in inventory.records.get("users", {}).values()
         if str((record.attributes.get("sAMAccountName", [""])[0]
