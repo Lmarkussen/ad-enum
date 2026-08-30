@@ -39,14 +39,15 @@ def probe_known_services(targets, *, ports=None, timeout=1.5, max_hosts=64, conn
                 seen.add(key)
                 item = {"host": host or str(address), "ip": str(address), "service": name,
                         "port": int(port), "protocol": "tcp", "reachable": False,
-                        "state": "CLOSED", "source": "bounded-tcp-connect"}
+                        "state": "CLOSED", "protocol_state": "CLOSED / UNREACHABLE",
+                        "source": "bounded-tcp-connect"}
                 try:
                     connection = connector((str(address), int(port)), timeout=timeout)
                     try:
                         connection.close()
                     except OSError:
                         pass
-                    item.update(reachable=True, state="OPEN")
+                    item.update(reachable=True, state="OPEN", protocol_state="TCP OPEN")
                 except (OSError, TimeoutError):
                     pass
                 results.append(item)
