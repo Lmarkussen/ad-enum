@@ -193,18 +193,34 @@ class Collector:
                     continue
                 seen.add(target_dn.lower())
                 try:
-                    conn.search(target_dn, "(objectClass=*)", search_scope="BASE",
-                                attributes=["objectClass", "cn", "name", "sAMAccountName",
-                                            "objectSid", "objectGUID", "distinguishedName",
-                                            "nTSecurityDescriptor"],
-                                controls=security_descriptor_control(sdflags=0x04))
-                    raw_security_descriptors.extend(dict(e.entry_attributes_as_dict,
-                                                         distinguishedName=e.entry_dn,
-                                                         targetKind=target_kind) for e in conn.entries)
+                    descriptor_attrs = ["objectClass", "cn", "name", "sAMAccountName",
+                                        "objectSid", "objectGUID", "distinguishedName",
+                                        "nTSecurityDescriptor"]
+                    # Some AD/LDAP combinations reject SD flags on otherwise
+                    # readable fixture objects.  Retry without the control so
+                    # one server-side control failure cannot erase the
+                    # descriptor evidence for that target.
+                    queried = conn.search(target_dn, "(objectClass=*)", search_scope="BASE",
+                                          attributes=descriptor_attrs,
+                                          controls=security_descriptor_control(sdflags=0x04))
+                    if not queried or not conn.entries:
+                        queried = conn.search(target_dn, "(objectClass=*)", search_scope="BASE",
+                                              attributes=descriptor_attrs)
+                    if queried:
+                        raw_security_descriptors.extend(dict(e.entry_attributes_as_dict,
+                                                             distinguishedName=e.entry_dn,
+                                                             targetKind=target_kind) for e in conn.entries)
                 except Exception:
-                    # A protected target must not suppress descriptor results
-                    # for the other narrowly selected objects.
-                    continue
+                    try:
+                        if conn.search(target_dn, "(objectClass=*)", search_scope="BASE",
+                                       attributes=descriptor_attrs):
+                            raw_security_descriptors.extend(dict(e.entry_attributes_as_dict,
+                                                                 distinguishedName=e.entry_dn,
+                                                                 targetKind=target_kind) for e in conn.entries)
+                    except Exception:
+                        # A protected target must not suppress descriptor
+                        # results for the other narrowly selected objects.
+                        continue
         except Exception:
             raw_security_descriptors = []
         raw_trusts, raw_laps_schema = [], []
