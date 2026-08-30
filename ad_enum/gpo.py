@@ -103,3 +103,36 @@ def collect_sysvol(context, gpos, max_bytes=1024 * 1024):
         if connection is not None:
             try: connection.logoff()
             except Exception: pass
+
+
+def collect_netlogon(context, max_depth=3):
+    """Inventory only likely domain script/config files in NETLOGON."""
+    try:
+        from impacket.smbconnection import SMBConnection
+    except ImportError as exc:
+        return {"status": "UNAVAILABLE", "files": [], "error": f"impacket unavailable: {exc}"}
+    connection = None; files = []
+    try:
+        host = context.dc_hostname or context.dc_ip
+        connection = SMBConnection(host, context.dc_ip, sess_port=445, timeout=context.timeout)
+        connection.login(context.auth.username, context.auth.password, context.auth.domain)
+        pending = [("\\*", 0)]
+        while pending:
+            directory, depth = pending.pop()
+            if depth > max_depth: continue
+            try: entries = connection.listPath("NETLOGON", directory)
+            except Exception: continue
+            for entry in entries:
+                name = entry.get_longname()
+                if name in {".", ".."}: continue
+                path = directory.rstrip("*") + name
+                if entry.is_directory(): pending.append((path + "\\*", depth + 1)); continue
+                if Path(name).suffix.lower() in SCRIPT_SUFFIXES:
+                    files.append({"path": path, "name": name, "size": entry.get_filesize()})
+        return {"status": "PASS", "files": files}
+    except Exception as exc:
+        return {"status": "FAILED", "files": files, "error": f"{type(exc).__name__}: {exc}"}
+    finally:
+        if connection is not None:
+            try: connection.logoff()
+            except Exception: pass

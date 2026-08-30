@@ -18,7 +18,9 @@ class NetworkHoundAdapter(ToolAdapter):
         path = self.resolve_executable()
         if not path: raise FileNotFoundError("NetworkHound.py is not installed")
         output = context.workspace.raw_dir("NetworkHound") / "networkhound.json"
-        command = [path, "--dc", context.dc_hostname or context.dc_ip, "--domain", context.domain,
+        runner = str(Path(path).parent / ".venv" / "bin" / "python")
+        command = ([runner, path] if Path(runner).is_file() else [path]) + [
+                   "--dc", context.dc_hostname or context.dc_ip, "--domain", context.domain,
                    "--user", context.auth.username, "--output", str(output), "--dns", context.dc_ip]
         if context.force_kerb: command.append("--kerberos")
         else: command.extend(["--password", context.auth.password])

@@ -15,7 +15,7 @@ from .external import execute_external
 from .inventory import native_inventory, DomainInventory, build_targets, sensitive_description, parse_netexec_smb
 from .sccm import discover as discover_sccm, normalize_relayking, probe_management_points
 from .network import build_dns_map
-from .gpo import normalize_gpos, collect_sysvol, inspect_file
+from .gpo import normalize_gpos, collect_sysvol, collect_netlogon, inspect_file
 from .kerberos import roastable
 from .delegation import enumerate_delegation, enumerate_gmsa
 from .core.console import Console
@@ -200,6 +200,7 @@ def main():
     coverage.add("SCCM / infrastructure discovery", "PASS", f"{len(sccm_result['hosts'])} candidate host(s)")
     gpos = normalize_gpos(collector.raw.get("gpos", []))
     sysvol = collect_sysvol(context, gpos)
+    netlogon = collect_netlogon(context)
     gpo_findings = []
     gpo_by_guid = {str(g.get("guid", "")).strip("{}").lower(): g for g in gpos}
     for item in sysvol.get("files", []):
@@ -210,9 +211,20 @@ def main():
     workspace.write_json(workspace.findings_path("GPO", "inventory.json"), gpos)
     workspace.write_json(workspace.findings_path("GPO", "policies.json"), {"status": sysvol.get("status"), "error": sysvol.get("error", ""), "files": [{k: v for k, v in x.items() if k != "content"} for x in sysvol.get("files", [])]})
     workspace.write_json(workspace.findings_path("GPO", "findings.json"), gpo_findings)
+    sysvol_dir = workspace.module_dir("GPO") / "SYSVOL"
+    workspace.write_json(sysvol_dir / "inventory.json",
+                         [{"gpo_guid": x.get("gpo_guid"), "path": x.get("path"), "name": x.get("name"),
+                           "size": len(x.get("content", b"")), "inspection_status": "INSPECTED"}
+                          for x in sysvol.get("files", [])])
+    workspace.write_json(sysvol_dir / "findings.json", gpo_findings)
+    workspace.write_text(workspace.module_dir("GPO") / "findings.txt",
+                         "\n\n".join(f"[GPO] {x['title']}\n  File: {x['file']}\n  Account: {x['account']}" for x in gpo_findings) + ("\n" if gpo_findings else ""))
+    workspace.write_json(workspace.module_dir("GPO") / "NETLOGON" / "inventory.json", netlogon)
     coverage.add("GPO / LDAP inventory", "PASS", f"{len(gpos)} group policy object(s)")
     gpo_status = {"PASS": "PASS", "FAILED": "FAILED", "UNAVAILABLE": "NOT AVAILABLE"}.get(sysvol.get("status"), "FAILED")
     coverage.add("GPO / SYSVOL targeted inspection", gpo_status, f"{len(sysvol.get('files', []))} file(s)")
+    netlogon_status = {"PASS": "PASS", "FAILED": "FAILED", "UNAVAILABLE": "NOT AVAILABLE"}.get(netlogon.get("status"), "FAILED")
+    coverage.add("GPO / NETLOGON targeted inventory", netlogon_status, f"{len(netlogon.get('files', []))} file(s)")
     relay_findings = []
     relay_result = external_results.get("relay", {})
     if relay_result.get("status") == "PASS":
