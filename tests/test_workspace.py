@@ -47,6 +47,7 @@ def test_invalid_credentials_do_not_create_workspace(tmp_path, monkeypatch, caps
     import ad_enum.cli as cli
     class BadCollector:
         def __init__(self, *args, **kwargs): pass
+        def preflight(self): raise RuntimeError("invalid credentials")
         def collect(self): raise RuntimeError("invalid credentials")
     monkeypatch.setattr(cli, "Collector", BadCollector)
     monkeypatch.setattr(sys, "argv", ["ad-enum", "scan", "--dc-ip", "10.0.0.1",

@@ -35,6 +35,7 @@ from .service_probe import DEFAULT_SERVICES, probe_known_services
 from .access import from_netexec_hosts, merge_access
 from .adapters.netexec import NetExecAdapter
 from .cred1_adapter import run_safe_cred1
+from .cred1_runtime import check_cred1_runtime
 from .sccm_models import SCCMArtifactLimits
 
 
@@ -295,7 +296,17 @@ def main():
             if failure.hint: console.line(f"  {failure.hint}")
             if a.verbose: console.debug_line(f"Raw Kerberos error: {failure.raw}")
         else:
-            console.status("Credentials Invalid", "INVALID")
+            message = str(exc).lower()
+            if any(token in message for token in ("invalid credentials", "invalidcredential",
+                                                  "logon failure", "bad password")):
+                console.status("Credentials Invalid", "INVALID")
+            elif isinstance(exc, (TimeoutError, socket.timeout)) or "timed out" in message or "timeout" in message:
+                console.status("Credential validation failed — LDAP timeout", "FAILED")
+            elif any(token in message for token in ("signing", "channel binding", "stronger authentication",
+                                                    "confidentiality required")):
+                console.status("Credential validation blocked by LDAP policy", "FAILED")
+            else:
+                console.status("Credential validity could not be established", "FAILED")
             if a.verbose: console.debug_line(f"preflight failed: {type(exc).__name__}: {exc}")
         return 2
     if not ipaddress.ip_address(a.domain) if False else False:
@@ -645,9 +656,18 @@ def main():
     cred1_targets = [a.cred1_dp] if a.cred1_dp else cred1_candidates(sccm_result)
     if cred1_targets:
         console.activity("Checking SCCM CRED-1 PXE exposure...")
-        cred1_results = [run_safe_cred1(target, timeout=min(a.timeout, 30),
-                                        limits=SCCMArtifactLimits())
-                         for target in cred1_targets[:4]]
+        cred1_results = []
+        for target in cred1_targets[:4]:
+            runtime = check_cred1_runtime(target)
+            if runtime["status"] != "READY":
+                cred1_results.append({"dp": target, "pxe": "NOT TESTED", "wds": "NOT TESTED",
+                                      "tftp": "NOT TESTED", "media_protection": "UNKNOWN",
+                                      "secret_inspection": "NOT ATTEMPTED", "evidence": runtime["reasons"],
+                                      "sources": ["CRED-1 execution-host prerequisite check"],
+                                      "runtime": runtime})
+            else:
+                cred1_results.append(run_safe_cred1(target, timeout=min(a.timeout, 30),
+                                                    limits=SCCMArtifactLimits()))
         sccm_result["cred1"] = cred1_results[0] if len(cred1_results) == 1 else cred1_results
         workspace.write_json(workspace.findings_path("SCCM", "cred1.json"), sccm_result["cred1"])
         cred1_status = "PASS" if any(x.get("pxe") == "CONFIRMED" for x in cred1_results) else "PARTIAL"
