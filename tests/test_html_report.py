@@ -2,7 +2,10 @@ import subprocess
 import sys
 
 from ad_enum.reporting.html import render_html, write_html_report
-from ad_enum.sccm_models import SCCMArtifactLimits, bounded_artifact_candidates, normalize_pxe_evidence
+from ad_enum.sccm_models import (SCCMArtifactLimits, bounded_artifact_candidates,
+                                  normalize_mp_metadata, normalize_pxe_evidence,
+                                  normalize_dp_content, normalize_task_sequences,
+                                  normalize_sccm_topology, normalize_sccm_capabilities)
 
 
 def _model():
@@ -47,6 +50,42 @@ def test_pxe_model_preserves_unknown_safe_defaults():
     assert result["state"] == "NOT TESTED"
     assert result["implementation"] == "UNKNOWN"
     assert result["protection"] == "UNKNOWN"
+
+
+def test_sccm_offline_models_preserve_evidence_and_explicit_states():
+    mp = normalize_mp_metadata({"fqdn": "MECM.sccm.lab", "sitecode": "P01",
+                                "protocol": "http", "version": "2403",
+                                "sources": ["MPLIST"]})
+    assert mp["site_code"] == "P01"
+    assert mp["protocol"] == "HTTP"
+    assert mp["sources"] == ["MPLIST"]
+
+    content = normalize_dp_content([
+        {"package_id": "P010001", "content_id": "C010001", "name": "Boot image",
+         "size": 4, "url": "http://mecm/sms_dp_smspkg$/P010001"},
+    ])
+    assert content[0]["content_id"] == "C010001"
+    assert content[0]["access"] == "UNKNOWN"
+
+    sequences = normalize_task_sequences([{"id": "TS100", "name": "WinPE",
+                                           "package_references": ["P010001"],
+                                           "access": "denied"}])
+    assert sequences[0]["id"] == "TS100"
+    assert sequences[0]["access"] == "DENIED"
+
+    topology = normalize_sccm_topology({"site_code": "P01", "nodes": [
+        {"host": "MECM.sccm.lab", "role": "DP", "status": "partial",
+         "low_priv_visibility": "not observable", "sources": ["fixture"]}],
+        "relationships": [{"from": "P01", "to": "MECM.sccm.lab", "role": "DP",
+                            "confidence": "candidate"}]})
+    assert topology["nodes"][0]["status"] == "PARTIAL"
+    assert topology["nodes"][0]["low_priv_visibility"] == "NOT OBSERVABLE"
+    assert topology["relationships"][0]["confidence"] == "CANDIDATE"
+
+    coverage = normalize_sccm_capabilities({"DP": {"status": "not tested", "detail": "offline"},
+                                             "PXE": "complete"})
+    assert coverage["DP"]["status"] == "NOT TESTED"
+    assert coverage["PXE"]["status"] == "COMPLETE"
 
 
 def test_html_out_is_real_cli_flag():

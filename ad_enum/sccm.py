@@ -4,6 +4,9 @@ import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 
+from ad_enum.sccm_models import (normalize_pxe_evidence, normalize_sccm_topology,
+                                 normalize_sql_relationship)
+
 
 def _values(attrs, key):
     value = attrs.get(key, [])
@@ -123,13 +126,31 @@ def discover(inventory, raw=None, dns_map=None):
     for host in hosts:
         address = dns_records.get(str(host.get("fqdn", "")).lower())
         if address: host["ip_addresses"] = address.get("ip_addresses", [])
-    return {"hosts": hosts, "relationships": relationships, "spn_accounts": spn_accounts,
+    topology_nodes = [{"host": x.get("fqdn") or x.get("name"),
+                       "ip": (x.get("ip_addresses") or [""])[0],
+                       "role": x.get("role", "candidate"), "site": site_code or "",
+                       "status": "CANDIDATE", "confidence": x.get("confidence", "CANDIDATE"),
+                       "low_priv_visibility": "DETECTED", "sources": x.get("sources", []),
+                       "evidence": x.get("hints", [])} for x in hosts]
+    topology_nodes.extend({"host": x.get("fqdn") or x.get("host"),
+                           "ip": (x.get("ip_addresses") or [""])[0],
+                           "role": "management-point", "site": x.get("site_code") or site_code or "",
+                           "status": "CONFIRMED", "confidence": "CONFIRMED",
+                           "low_priv_visibility": "DETECTED", "sources": ["SCCM LDAP publication"],
+                           "evidence": [x.get("evidence", "")]} for x in management_points)
+    topology = normalize_sccm_topology({"site_code": site_code or "", "nodes": topology_nodes,
+                                        "relationships": relationships, "sources": ["SCCM LDAP publication"]})
+    return {"hosts": hosts, "relationships": relationships, "topology": topology,
+            "spn_accounts": spn_accounts,
             "publication": publication,
             "site_code": site_code, "site_code_sources": [x["dn"] for x in publication["objects"]
                             if site_code and site_code in x["site_codes"]],
             "management_points": management_points, "distribution_points": [],
             "site_servers": [], "sms_providers": [], "sql_servers": [x for x in hosts if x["role"] == "sql-candidate"],
-            "pxe": pxe,
+            "pxe": normalize_pxe_evidence(pxe),
+            "dp_content": [], "task_sequences": [],
+            "sql_relationship": normalize_sql_relationship({"site_code": site_code or "",
+                                                               "status": "NOT TESTED"}),
             "sup_wsus": [], "status": "sccm-publication-and-inventory"}
 
 

@@ -542,10 +542,15 @@ def main():
                                          "http_status": x.get("http_status"), "metadata": x.get("metadata", {})}
                                         for x in confirmed]
     workspace.write_json(workspace.findings_path("SCCM", "inventory.json"), sccm_result)
-    workspace.write_json(workspace.findings_path("SCCM", "topology.json"), sccm_result)
+    workspace.write_json(workspace.findings_path("SCCM", "topology.json"),
+                         sccm_result.get("topology", {}))
     workspace.write_json(workspace.raw_dir("SCCM") / "ldap-publication.json", collector.raw.get("sccm", []))
     workspace.write_json(workspace.findings_path("SCCM", "endpoints.json"), sccm_result.get("endpoint_probes", []))
     workspace.write_json(workspace.findings_path("SCCM", "pxe.json"), sccm_result.get("pxe", {}))
+    workspace.write_json(workspace.findings_path("SCCM", "dp-content.json"),
+                         sccm_result.get("dp_content", []))
+    workspace.write_json(workspace.findings_path("SCCM", "task-sequences.json"),
+                         sccm_result.get("task_sequences", []))
     coverage.add("SCCM / infrastructure discovery", "PASS", f"{len(sccm_result.get('hosts', []))} candidate host(s)")
     # Keep SCCM coverage granular: the aggregate line describes the
     # discovery family only and must not imply that every role is observable.
