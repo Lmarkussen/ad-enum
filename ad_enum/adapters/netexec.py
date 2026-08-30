@@ -1,5 +1,9 @@
 from .base import ToolAdapter
 from ..inventory import normalize_password_policy, parse_netexec_smb, parse_netexec_shares
+from ..access import parse_netexec_auth
+
+
+SAFE_ACCESS_PROTOCOLS = ("SMB", "LDAP", "SSH", "RDP", "WINRM", "MSSQL")
 
 class NetExecAdapter(ToolAdapter):
     source_name = "netexec"
@@ -11,6 +15,93 @@ class NetExecAdapter(ToolAdapter):
     def build_policy_command(self, *, domain, username, password, target):
         return [self.executable, "ldap", target, "-u", username, "-p", password,
                 "-d", domain, "--pass-pol", "--no-progress"]
+
+    def build_access_command(self, *, protocol, username, password, target,
+                             help_text="", force_kerb=False):
+        """Build one authentication-only NetExec attempt.
+
+        The command deliberately contains no module action, command, shell,
+        file, or post-authentication option.  Optional quiet flags are added
+        only when the installed protocol help advertises them.
+        """
+        protocol = str(protocol).lower()
+        if protocol not in {x.lower() for x in SAFE_ACCESS_PROTOCOLS}:
+            raise ValueError(f"unsupported safe access protocol: {protocol}")
+        command = [self.executable, protocol, target, "-u", username, "-p", password]
+        advertised = str(help_text).lower()
+        if "--no-progress" in advertised:
+            command.append("--no-progress")
+        if "--no-bruteforce" in advertised:
+            command.append("--no-bruteforce")
+        if force_kerb and "--use-kcache" in advertised:
+            command.extend(["-k", "--use-kcache"])
+        return command
+
+    def access_help(self, protocol, *, timeout=5):
+        """Return protocol help used to gate optional safe flags.
+
+        Failure is non-fatal; the minimal protocol invocation remains the
+        only fallback and still performs one bounded authentication attempt.
+        """
+        executable = self.resolve_executable()
+        if not executable:
+            return ""
+        import subprocess
+        try:
+            result = subprocess.run([executable, str(protocol).lower(), "--help"],
+                                    capture_output=True, text=True, timeout=timeout,
+                                    check=False)
+            return (result.stdout or "") + (result.stderr or "")
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+
+    def run_access_checks(self, *, context, targets):
+        """Validate the current scan identity once per observed target/protocol."""
+        records, seen = [], set()
+        help_cache = {}
+        protocol_map = {"SMB": "smb", "LDAP": "ldap", "SSH": "ssh",
+                        "RDP": "rdp", "WINRM": "winrm", "MSSQL": "mssql"}
+        for item in targets or []:
+            protocol = str(item.get("protocol", item.get("service", ""))).upper()
+            protocol = next((key for key in protocol_map if key in protocol), "")
+            if not protocol or protocol not in SAFE_ACCESS_PROTOCOLS:
+                continue
+            host = item.get("host") or item.get("fqdn") or item.get("ip")
+            target = item.get("ip") or host
+            if not target:
+                continue
+            key = (str(target).lower(), protocol)
+            if key in seen:
+                continue
+            seen.add(key)
+            if protocol not in help_cache:
+                help_cache[protocol] = self.access_help(protocol)
+            command = self.build_access_command(
+                protocol=protocol, username=context.auth.username,
+                password=context.auth.password, target=target,
+                help_text=help_cache[protocol], force_kerb=context.force_kerb)
+            try:
+                proc = self.execute(command, cwd=context.workspace.raw_dir("NetExec"),
+                                    timeout=min(context.timeout, 10),
+                                    secrets=(context.auth.password,),
+                                    stream=context.tool_output_callback)
+                output = self.redact_text((proc.stdout or "") + (proc.stderr or ""),
+                                          (context.auth.password,))
+                record = parse_netexec_auth(
+                    output, protocol=protocol, host=host or target,
+                    ip=item.get("ip", target), principal=context.auth.username,
+                    source="NetExec")
+                record["roles"] = item.get("roles", []) or []
+                record["port"] = item.get("port")
+                records.append(record)
+            except Exception as exc:
+                records.append({"host": host or target, "ip": item.get("ip", target),
+                                "roles": item.get("roles", []), "protocol": protocol,
+                                "port": item.get("port"), "principal": context.auth.username,
+                                "authentication": "AUTH ERROR", "privilege": "UNKNOWN",
+                                "source": "NetExec", "evidence": {},
+                                "error_class": type(exc).__name__})
+        return records
 
     def run(self, *, context):
         raw = context.raw_dir("NetExec") if hasattr(context, "raw_dir") else context.workspace.raw_dir("NetExec")

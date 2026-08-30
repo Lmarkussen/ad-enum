@@ -45,6 +45,7 @@ python_header="/usr/include/$(python3 -c 'import sys; print("python" + str(sys.v
 if [[ "$mode" != minimal ]] && ! command -v pipx >/dev/null 2>&1; then apt_packages+=(pipx); fi
 if [[ "$mode" != minimal ]] && ! command -v nxc >/dev/null 2>&1; then apt_packages+=(netexec); fi
 if [[ "$mode" != minimal ]] && ! command -v kinit >/dev/null 2>&1; then apt_packages+=(krb5-user); fi
+if [[ "$mode" != minimal ]] && ! command -v go >/dev/null 2>&1; then apt_packages+=(golang-go); fi
 if ((${#apt_packages[@]})); then
   command -v sudo >/dev/null 2>&1 || { fail "Missing system packages: ${apt_packages[*]} (sudo unavailable)"; exit 1; }
   run_logged "System dependency installation" sudo apt-get update
@@ -79,6 +80,13 @@ if [[ "$mode" != minimal ]]; then
     # the other external collectors. Do not guess legacy CME flags here.
     run_logged "NetExec installation" pipx install --force netexec
     if command -v nxc >/dev/null 2>&1; then ok "NetExec installed"; else warn "NetExec is not available; default toolset is incomplete"; fi
+  fi
+  if command -v go >/dev/null 2>&1; then
+    say "Building bounded SCCM PXE helper"
+    run_logged "SCCM PXE helper build" go -C helpers/sccm_pxe build -o "$repo_dir/.venv/bin/ad-enum-sccm-pxe" .
+    ok "Bounded SCCM PXE helper built"
+  else
+    warn "Go is unavailable; bounded SCCM PXE helper was not built"
   fi
 fi
 

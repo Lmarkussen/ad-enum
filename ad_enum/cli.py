@@ -32,6 +32,9 @@ from .recon import (normalize_mssql, normalize_dfs, normalize_services,
                     normalize_trust_context, build_privilege_paths)
 from .service_probe import DEFAULT_SERVICES, probe_known_services
 from .access import from_netexec_hosts, merge_access
+from .adapters.netexec import NetExecAdapter
+from .cred1_adapter import run_safe_cred1
+from .sccm_models import SCCMArtifactLimits
 
 
 CATEGORY_ORDER = ("ADCS", "POLICY", "KERBEROS", "ACCOUNT", "DELEGATION",
@@ -226,6 +229,8 @@ def main():
     p.add_argument("--modules", default="all", help="comma-separated modules (default: all read-only collectors)")
     p.add_argument("--profile", default="default")
     p.add_argument("--certipy-json", help="optional Certipy -json result for corroboration")
+    p.add_argument("--cred1-dp", metavar="HOST_OR_IP",
+                   help="optionally run one bounded safe CRED-1 PXE query against a known DP")
     # The output directory is the parent of the canonical domain workspace.
     # Keeping the default as the current directory makes new scans land in
     # ./<canonical-domain>/ while preserving the explicit --output-dir API.
@@ -627,6 +632,19 @@ def main():
                          sccm_result.get("dp_content", []))
     workspace.write_json(workspace.findings_path("SCCM", "task-sequences.json"),
                          sccm_result.get("task_sequences", []))
+    if a.cred1_dp:
+        console.activity("Checking SCCM CRED-1 PXE exposure...")
+        cred1 = run_safe_cred1(a.cred1_dp, timeout=min(a.timeout, 30),
+                               limits=SCCMArtifactLimits())
+        sccm_result["cred1"] = cred1
+        workspace.write_json(workspace.findings_path("SCCM", "cred1.json"), cred1)
+        cred1_status = "PASS" if cred1.get("pxe") == "CONFIRMED" else "PARTIAL"
+        coverage.add("SCCM / CRED-1 safe PXE acquisition", cred1_status,
+                     f"PXE={cred1.get('pxe', 'UNKNOWN')}; media={cred1.get('media_protection', 'UNKNOWN')}")
+        console.complete("SCCM CRED-1 PXE analysis complete")
+    else:
+        coverage.add("SCCM / CRED-1 safe PXE acquisition", "NOT TESTED",
+                     "use --cred1-dp with one known distribution point")
     coverage.add("SCCM / infrastructure discovery", "PASS", f"{len(sccm_result.get('hosts', []))} candidate host(s)")
     # Keep SCCM coverage granular: the aggregate line describes the
     # discovery family only and must not imply that every role is observable.
@@ -677,16 +695,33 @@ def main():
     coverage.add("Services / bounded exposure inventory", "PASS" if service_inventory else "PARTIAL",
                  f"{len(service_inventory)} service observation(s)")
     console.complete("Service exposure analysis complete")
-    access_records = merge_access(from_netexec_hosts(
-        external_results.get("netexec", {}).get("result", {}).get("hosts", []), a.username))
-    if any(item.get("authentication") == "AUTHENTICATED" for item in access_records):
-        coverage.add("Access / current-identity SMB auth", "PASS", "reused NetExec SMB authentication evidence")
+    access_records = from_netexec_hosts(
+        external_results.get("netexec", {}).get("result", {}).get("hosts", []), a.username)
+    access_records.append({"host": resolved_name, "ip": target, "protocol": "LDAP",
+                           "port": a.port or (636 if a.ldaps else 389),
+                           "principal": a.username, "authentication": "AUTHENTICATED",
+                           "privilege": "UNKNOWN", "source": "Native LDAP",
+                           "evidence": {"authenticated_collection": True}})
+    nxc = NetExecAdapter()
+    if nxc.resolve_executable():
+        # Service observations bound the authentication checks to known,
+        # relevant endpoints.  The adapter performs at most one attempt for
+        # each identity/host/protocol tuple and never receives artifact creds.
+        access_records.extend(nxc.run_access_checks(context=context, targets=service_inventory))
+    access_records = merge_access(access_records)
+    if any(item.get("authentication") == "AUTHENTICATED" and item.get("protocol") == "SMB"
+           for item in access_records):
+        coverage.add("Access / current-identity SMB auth", "PASS", "bounded NetExec authentication check")
+    elif nxc.resolve_executable():
+        coverage.add("Access / current-identity SMB auth", "PASS", "bounded NetExec check returned no success")
     else:
-        coverage.add("Access / current-identity SMB auth", "NOT TESTED", "NetExec SMB authentication evidence unavailable")
+        coverage.add("Access / current-identity SMB auth", "NOT TESTED", "NetExec is not installed")
     coverage.add("Access / current-identity LDAP auth", "PASS", "native LDAP collection authenticated")
     for protocol in ("SSH", "RDP", "WINRM", "MSSQL"):
-        coverage.add(f"Access / current-identity {protocol} auth", "NOT TESTED",
-                     "protocol-specific authentication adapter unavailable")
+        observed = any(item.get("protocol") == protocol for item in access_records)
+        coverage.add(f"Access / current-identity {protocol} auth",
+                     "PASS" if observed else "NOT TESTED",
+                     "bounded NetExec authentication check" if observed else "no observed candidate or NetExec unavailable")
     workspace.write_json(workspace.findings_path("Access", "inventory.json"), access_records)
     workspace.write_json(workspace.findings_path("Access", "findings.json"), [])
     workspace.write_text(workspace.module_dir("Access") / "findings.txt", "")
@@ -1121,7 +1156,7 @@ def main():
                 "access": access_records,
                 "sccm": {key: sccm_result.get(key, []) for key in
                           ("site_code", "management_points", "distribution_points", "site_servers",
-                           "sms_providers", "sql_servers", "sup_wsus", "pxe", "status")},
+                           "sms_providers", "sql_servers", "sup_wsus", "pxe", "cred1", "status")},
                 "coverage": coverage.as_dict(),
             }
             write_html_report(a.html_out, html_model)

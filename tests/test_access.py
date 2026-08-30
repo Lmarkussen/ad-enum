@@ -1,4 +1,5 @@
 from ad_enum.access import from_netexec_hosts, merge_access, normalize_access, parse_netexec_auth
+from ad_enum.adapters.netexec import NetExecAdapter
 
 
 def test_access_separates_authentication_from_privilege():
@@ -32,3 +33,13 @@ def test_netexec_auth_parser_requires_explicit_marker():
                                 protocol="SMB", host="dc.example", principal="user")
     assert result["authentication"] == "AUTHENTICATED"
     assert result["privilege"] == "ADMIN"
+
+
+def test_netexec_access_command_has_no_post_auth_actions():
+    command = NetExecAdapter().build_access_command(
+        protocol="ssh", username="user", password="scanner-secret", target="10.0.0.5",
+        help_text="--no-progress --no-bruteforce")
+    assert command[:3] == ["nxc", "ssh", "10.0.0.5"]
+    assert "--no-progress" in command
+    assert "--no-bruteforce" in command
+    assert not any(x in command for x in ("-x", "--exec-method", "--command", "--shell"))

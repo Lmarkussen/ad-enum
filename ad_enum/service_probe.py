@@ -10,8 +10,11 @@ from .protocols import parse_http_service, parse_rdp_negotiation, parse_tds_prel
 
 
 DEFAULT_SERVICES = {
+    22: "SSH",
     135: "RPC",
     445: "SMB",
+    389: "LDAP",
+    636: "LDAPS",
     3389: "RDP",
     5985: "WinRM HTTP",
     5986: "WinRM HTTPS",
