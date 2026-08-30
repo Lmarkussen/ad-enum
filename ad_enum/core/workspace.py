@@ -71,5 +71,12 @@ class ScanWorkspace:
     def write_text(self, path, value):
         path = Path(path); path.parent.mkdir(parents=True, exist_ok=True); path.write_text(value); return path
 
+    def write_text_atomic(self, path, value):
+        path = Path(path); path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.{self.scan_id}.tmp")
+        temporary.write_text(value)
+        temporary.replace(path)
+        return path
+
     def relative(self, path):
         return Path(path).resolve().relative_to(self.root).as_posix()

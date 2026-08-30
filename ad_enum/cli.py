@@ -24,6 +24,95 @@ from .delegation import enumerate_delegation, enumerate_gmsa
 from .core.console import Console
 
 
+CATEGORY_ORDER = ("ADCS", "POLICY", "KERBEROS", "ACCOUNT", "DELEGATION",
+                  "GPO", "ACL", "LAPS", "LDAP", "SMB", "RELAY", "SCCM", "TRUSTS")
+
+
+def _finding_lines(findings):
+    """Render normalized findings without terminal decoration.
+
+    This is deliberately also suitable for results.txt: it contains the
+    operator-facing evidence, but never progress, subprocess output, or raw
+    diagnostics.
+    """
+    grouped = {category: [] for category in CATEGORY_ORDER}
+    for item in findings:
+        if item.get("rule") == "Kerberoastable-account" and item.get("title", "").endswith("(disabled)"):
+            continue
+        grouped.setdefault(item.get("category", "OTHER"), []).append(item)
+    lines = []
+    for category in CATEGORY_ORDER + tuple(x for x in grouped if x not in CATEGORY_ORDER):
+        items = grouped.get(category, [])
+        if not items:
+            continue
+        lines.extend([f"------------[ {category} ]------------", ""])
+        for item in items:
+            status = item.get("status", "").upper()
+            if item.get("rule") == "ESC1" and status in {"DISAGREEMENT", "LIVE-CONFIRMED DISAGREEMENT"}:
+                status = "CONFIRMED"
+            evidence = item.get("evidence", {}) or {}
+            title = item.get("title", "")
+            if category == "ACL":
+                title = f"Account control — {item.get('affected_object', title)}"
+            lines.append(title)
+            if item.get("rule") == "ESC1":
+                lines.append(f"  Status ........... {status}")
+                if item.get("status") in {"disagreement", "live-confirmed disagreement"}:
+                    lines.append("  Note ............. Certipy did not classify this template as ESC1")
+            elif item.get("rule") == "Kerberoastable-account":
+                lines.extend([f"  State ............ {'enabled' if evidence.get('enabled') else 'disabled'}",
+                              f"  SPNs ............. {len(evidence.get('spns', []))}",
+                              f"  Status ........... {item.get('status', '').upper()}" ])
+                for label in ("Privileged", "Service account", "Password age"):
+                    key = {"Privileged": "privileged", "Service account": "service_account",
+                           "Password age": "password_age"}[label]
+                    if key in evidence:
+                        lines.append(f"  {label:<18} {evidence[key]}")
+            elif category == "ACL":
+                lines.extend([f"  Principal ........ {evidence.get('principal_sid', 'unknown')}",
+                              f"  Rights ........... {evidence.get('effective_rights', '')}",
+                              "  Impact ........... Low-privileged principal can alter or control this object"])
+            elif category == "DELEGATION" and item.get("rule") == "rbcd":
+                lines.extend([f"  Allowed principal  {evidence.get('principal_name') or evidence.get('principal_sid', 'unknown')}",
+                              f"  Impact ........... {evidence.get('impact', 'May impersonate users to Kerberos services on the target')}"])
+            elif item.get("rule", "").startswith("gpo-"):
+                if evidence.get("file"): lines.append(f"  File ............. {evidence['file']}")
+                if evidence.get("account"): lines.append(f"  Account .......... {evidence['account']}")
+                if evidence.get("type"): lines.append(f"  Type ............. {evidence['type']}")
+                if evidence.get("value"):
+                    label = "cpassword" if item.get("rule") == "gpp-cpassword" else "Value"
+                    lines.append(f"  {label:<18} {evidence['value']}")
+            elif status:
+                lines.append(f"  Status ........... {status}")
+            lines.append("")
+    return lines
+
+
+def _results_text(root, target, external_results, inventory, cas, templates, all_findings,
+                  workspace, *, corroborated=0, disagreements=0):
+    lines = ["AD-Enum", "", "Target",
+             Console.field("Domain", root), Console.field("DC", target), "",
+             "Collectors", Console.field("Native LDAP", "PASS")]
+    for module_id, label in (("bloodhound", "BloodHound"), ("adcs-certipy", "Certipy"),
+                             ("ldapdomaindump", "LDAPDomainDump"), ("netexec", "NetExec")):
+        state = external_results.get(module_id, {}).get("status", "NOT CHECKED")
+        display = {"PASS": "PASS", "FAILED": "FAILED", "UNAVAILABLE": "NOT AVAILABLE"}.get(state, state)
+        lines.append(Console.field(label, display))
+    lines.extend(["", "Inventory"])
+    counts = inventory.counts()
+    for key, label in (("users", "Users"), ("groups", "Groups"), ("computers", "Computers"),
+                       ("domain_controllers", "Domain Controllers"), ("domains", "Domains"),
+                       ("gmsa", "gMSAs")):
+        lines.append(Console.field(label, counts.get(key, 0)))
+    lines.extend([Console.field("CAs", len(cas)), Console.field("Templates", len(templates)), "",
+                  "Correlation", Console.field("Corroborated", corroborated),
+                  Console.field("Disagreements", disagreements), "", "Findings"])
+    finding_lines = _finding_lines(all_findings)
+    lines.extend(finding_lines or ["  None"])
+    lines.extend(["", "Workspace", f"  {workspace.domain}/", ""])
+    return "\n".join(lines)
+
+
 def main():
     argv = sys.argv[1:]
     if argv and argv[0] == "auto-config" and "--restore" in argv[1:]:
@@ -201,19 +290,59 @@ def main():
     workspace.write_json(workspace.findings_path("Kerberos", "gmsa.json"), gmsa_records)
     coverage.add("Kerberos / account exposure", "PASS", "native LDAP account flags and SPNs")
     coverage.add("Delegation / LDAP configuration", "PASS", "UAC, constrained delegation, and RBCD observations")
-    domain_security = {"machine_account_quota": collector.raw.get("machineAccountQuota", "unknown"),
-                       "account_flag_observations": []}
     privileged_sids = privileged_account_sids(inventory)
+    domain_security = {"machine_account_quota": collector.raw.get("machineAccountQuota", "unknown"),
+                       "account_flag_observations": [], "privileged_sids": sorted(privileged_sids)}
+    domain_security_findings = []
     for record in inventory.records.get("users", {}).values():
         item = account_exposure(record)
-        if item.enabled and (item.flags.get("ENCRYPTED_TEXT_PWD_ALLOWED") or item.flags.get("USE_DES_KEY_ONLY")):
+        high_value = item.identifier in privileged_sids or bool(item.spns) or item.flags.get("DONT_REQ_PREAUTH") or item.flags.get("PASSWD_NOTREQD")
+        if item.enabled and (item.flags.get("ENCRYPTED_TEXT_PWD_ALLOWED") or item.flags.get("USE_DES_KEY_ONLY") or
+                             (item.flags.get("DONT_EXPIRE_PASSWORD") and high_value)):
             domain_security["account_flag_observations"].append({"account": item.username, "sid": item.identifier,
                 "encrypted_text_password_allowed": item.flags.get("ENCRYPTED_TEXT_PWD_ALLOWED", False),
                 "des_only": item.flags.get("USE_DES_KEY_ONLY", False),
-                "privileged": item.identifier in privileged_sids, "sources": item.sources})
+                "password_never_expires": item.flags.get("DONT_EXPIRE_PASSWORD", False),
+                "privileged": item.identifier in privileged_sids, "service_account": bool(item.spns), "sources": item.sources})
+        if not item.enabled:
+            continue
+        if item.flags.get("ENCRYPTED_TEXT_PWD_ALLOWED"):
+            domain_security_findings.append(NormalizedFinding(
+                finding_id=f"account:reversible-encryption:{item.identifier}", category="ACCOUNT",
+                rule="reversible-password-encryption", title=f"Reversible password encryption allowed — {item.username}",
+                affected_object=item.username, domain=workspace.domain,
+                sources=[{"source": source, "observed": True} for source in item.sources],
+                evidence={"userAccountControl": item.attributes.get("userAccountControl"), "privileged": item.identifier in privileged_sids},
+                status="corroborated" if len(item.sources) > 1 else "single-source", priority="high",
+                workspace_artifacts=["DomainSecurity/inventory.json"], first_seen_scan=workspace.scan_id,
+                current_scan=workspace.scan_id).as_dict())
+        if item.flags.get("USE_DES_KEY_ONLY"):
+            domain_security_findings.append(NormalizedFinding(
+                finding_id=f"kerberos:des-only:{item.identifier}", category="KERBEROS",
+                rule="des-only-kerberos", title=f"DES-only Kerberos enabled — {item.username}",
+                affected_object=item.username, domain=workspace.domain,
+                sources=[{"source": source, "observed": True} for source in item.sources],
+                evidence={"userAccountControl": item.attributes.get("userAccountControl"), "privileged": item.identifier in privileged_sids},
+                status="corroborated" if len(item.sources) > 1 else "single-source", priority="high",
+                workspace_artifacts=["DomainSecurity/inventory.json"], first_seen_scan=workspace.scan_id,
+                current_scan=workspace.scan_id).as_dict())
+        if item.flags.get("DONT_EXPIRE_PASSWORD") and high_value:
+            domain_security_findings.append(NormalizedFinding(
+                finding_id=f"account:password-never-expires:{item.identifier}", category="ACCOUNT",
+                rule="password-never-expires", title=f"Password never expires — {item.username}",
+                affected_object=item.username, domain=workspace.domain,
+                sources=[{"source": source, "observed": True} for source in item.sources],
+                evidence={"userAccountControl": item.attributes.get("userAccountControl"),
+                          "privileged": item.identifier in privileged_sids, "service_account": bool(item.spns)},
+                status="corroborated" if len(item.sources) > 1 else "single-source", priority="medium",
+                workspace_artifacts=["DomainSecurity/inventory.json"], first_seen_scan=workspace.scan_id,
+                current_scan=workspace.scan_id).as_dict())
+    domain_security["privileged_sids"] = sorted(privileged_sids)
     workspace.write_json(workspace.findings_path("DomainSecurity", "inventory.json"), domain_security)
-    workspace.write_json(workspace.findings_path("DomainSecurity", "findings.json"), [])
-    workspace.write_text(workspace.module_dir("DomainSecurity") / "findings.txt", "")
+    workspace.write_json(workspace.findings_path("DomainSecurity", "findings.json"), domain_security_findings)
+    workspace.write_text(workspace.module_dir("DomainSecurity") / "findings.txt",
+                         "\n".join(f"[{x['category']}] {x['title']}" for x in domain_security_findings) +
+                         ("\n" if domain_security_findings else ""))
     labels = {"bloodhound": "BloodHound", "adcs-certipy": "Certipy",
               "ldapdomaindump": "LDAPDomainDump", "netexec": "NetExec"}
     for module_id, result in external_results.items():
@@ -395,11 +524,11 @@ def main():
             status="single-source", priority="high",
             workspace_artifacts=["GPO/effective-rights.json" if is_gpo else "ACL/inventory.json"],
             first_seen_scan=workspace.scan_id, current_scan=workspace.scan_id).as_dict())
+    console.activity("Analyzing ACLs...")
     workspace.write_json(workspace.findings_path("ACL", "findings.json"), acl_findings)
     workspace.write_text(workspace.module_dir("ACL") / "findings.txt",
                          "\n".join(f"[{x['category']}] {x['title']}" for x in acl_findings) +
                          ("\n" if acl_findings else ""))
-    console.activity("Analyzing ACLs...")
     console.complete("ACL analysis complete")
     coverage.add("SMB / signing posture", "PASS" if smb_inventory else "NOT CHECKED", f"{len(smb_inventory)} host(s)")
     coverage.add("LDAP / signing and channel binding", "NOT CHECKED", "posture unknown; no direct safe proof")
@@ -439,7 +568,7 @@ def main():
         "execution_plan": [{"module": item.spec.id, "status": item.status.value, "reason": item.reason} for item in plan],
         "sources": ["ldap-native"] + ([key for key, value in external_results.items() if value.get("status") == "PASS"]),
         "artifacts": {"ldap_raw": "ADCS/raw/ldap.json", "findings": "ADCS/findings.json",
-                      "coverage": "coverage.json", "summary": "summary.txt"}
+                      "coverage": "coverage.json", "summary": "summary.txt", "results": "results.txt"}
     })
     workspace.write_json(workspace.raw_dir("ADCS") / "ldap.json", collector.raw)
     if certipy:
@@ -594,6 +723,7 @@ def main():
                                 if not (x.get("rule") == "Kerberoastable-account"
                                         and x.get("evidence", {}).get("enabled") is False)]
     all_findings = (finding_records + policy_findings + description_findings + active_kerberos_findings +
+                    domain_security_findings +
                     delegation_findings + relay_findings + smb_findings + acl_findings +
                     ldap_security_findings + [x["normalized"] for x in gpo_findings])
     workspace.write_json(workspace.findings_path("vulnerabilities", "findings.json"), all_findings)
@@ -645,10 +775,14 @@ def main():
                                                + (f" ({item.reason})" if item.reason else "") for item in plan) + "\n\n"
                f"{coverage.render()}\n")
     workspace.write_text(workspace.root / "summary.txt", summary)
+    report_text = _results_text(root, target, external_results, inventory, cas, templates, all_findings,
+                                workspace, corroborated=len(statuses), disagreements=len(disagreements))
+    workspace.write_text_atomic(workspace.root / "results.txt", report_text)
     # Keep a non-destructive historical copy for this scan ID.
     workspace.write_json(workspace.history_root / "scan.json", {"domain": root, "target": target,
                                                                   "scan_id": workspace.scan_id})
     workspace.write_json(workspace.history_root / "coverage.json", coverage.as_dict())
+    workspace.write_text(workspace.history_root / "results.txt", report_text)
     history_adcs = workspace.history_module_dir("ADCS")
     workspace.write_json(history_adcs / "findings.json", finding_records)
     workspace.write_json(history_adcs / "raw" / "ldap.json", collector.raw)
@@ -672,21 +806,21 @@ def main():
     console.line(f"  DC ................. {target}")
     console.line()
     console.heading("Collectors")
-    console.status("  Native LDAP ........ PASS", "PASS")
+    console.status(Console.field("Native LDAP", "PASS"), "PASS")
     for module_id, label in (("bloodhound", "BloodHound"), ("adcs-certipy", "Certipy"),
                              ("ldapdomaindump", "LDAPDomainDump"), ("netexec", "NetExec")):
         result = external_results.get(module_id, {})
         state = result.get("status", "NOT CHECKED")
         display = {"PASS": "PASS", "FAILED": "FAILED", "UNAVAILABLE": "NOT AVAILABLE"}.get(state, state)
-        console.status(f"  {label:<19} {display}", display)
+        console.status(Console.field(label, display), display)
     console.line()
     console.heading("Inventory")
     for key, label in (("users", "Users"), ("groups", "Groups"), ("computers", "Computers"),
                        ("domain_controllers", "Domain Controllers"), ("domains", "Domains"),
                        ("gmsa", "gMSAs")):
-        console.line(f"  {label:<19} {inventory.counts().get(key, 0)}")
-    console.line(f"  {'CAs':<19} {len(cas)}")
-    console.line(f"  {'Templates':<19} {len(templates)}")
+        console.line(Console.field(label, inventory.counts().get(key, 0)))
+    console.line(Console.field("CAs", len(cas)))
+    console.line(Console.field("Templates", len(templates)))
     console.line()
     console.heading("Findings")
     if not all_findings:

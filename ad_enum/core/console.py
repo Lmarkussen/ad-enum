@@ -30,6 +30,15 @@ class Console:
         color = "green" if state == "PASS" else ("yellow" if state in {"WARNING", "PARTIAL"} else "dim")
         self.line(self.paint(f"{marker} {text}", color))
 
+    @staticmethod
+    def field(label, value, width=19, leader="........"):
+        """Return a deterministic label/leader/value line.
+
+        Keeping alignment here means terminal color escapes never become part
+        of the padding calculation: callers color the completed line.
+        """
+        return f"  {label:<{width}} {leader} {value}"
+
     def heading(self, text):
         self.line(self.paint(text, "cyan"))
 
