@@ -232,6 +232,12 @@ def main():
     workspace.write_json(workspace.findings_path("SCCM", "endpoints.json"), sccm_result.get("endpoint_probes", []))
     workspace.write_json(workspace.findings_path("SCCM", "pxe.json"), sccm_result.get("pxe", {}))
     coverage.add("SCCM / infrastructure discovery", "PASS", f"{len(sccm_result['hosts'])} candidate host(s)")
+    expected_acl_principals = {
+        str(record.identifier) for record in inventory.records.get("users", {}).values()
+        if str((record.attributes.get("sAMAccountName", [""])[0]
+                if isinstance(record.attributes.get("sAMAccountName", [""]), list)
+                else record.attributes.get("sAMAccountName", ""))).lower() == str(a.username).lower()
+    }
     gpos = attach_gpo_links(normalize_gpos(collector.raw.get("gpos", [])),
                             collector.raw.get("gpo_links", []))
     gpo_acls = normalize_gpo_acls(collector.raw.get("gpos", []))
@@ -239,11 +245,13 @@ def main():
     for acl in gpo_acls:
         scope = gpo_by_name.get(str(acl.get("gpo", "")).lower(), {}).get("scope", {})
         acl["scope"] = scope
-    gpo_acl_observations = analyze_effective_acls(gpo_acls, inventory)
+    gpo_acl_observations = analyze_effective_acls(
+        gpo_acls, inventory, expected_principal_sids=expected_acl_principals)
     for observation in gpo_acl_observations:
         observation["scope"] = gpo_by_name.get(str(observation["target"]).lower(), {}).get("scope", {})
     high_value_acls = normalize_security_descriptors(collector.raw.get("security_descriptors", []))
-    high_value_acl_observations = analyze_effective_acls(high_value_acls, inventory)
+    high_value_acl_observations = analyze_effective_acls(
+        high_value_acls, inventory, expected_principal_sids=expected_acl_principals)
     sysvol = collect_sysvol(context, gpos)
     netlogon = collect_netlogon(context)
     gpo_findings = []

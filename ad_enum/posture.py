@@ -182,7 +182,7 @@ def _principal_is_low_priv(sid, inventory, maps, seen=None):
     return False, "unresolved-group"
 
 
-def analyze_effective_acls(rows, inventory, *, target_filter=None):
+def analyze_effective_acls(rows, inventory, *, target_filter=None, expected_principal_sids=None):
     """Return narrow, explainable effective dangerous-right observations.
 
     Denies are applied before allows for the relevant principal.  This is a
@@ -190,6 +190,7 @@ def analyze_effective_acls(rows, inventory, *, target_filter=None):
     complete Windows security-descriptor audit.
     """
     maps = _inventory_maps(inventory)
+    expected_principal_sids = {str(x).lower() for x in (expected_principal_sids or set())}
     observations = []
     for row in rows or []:
         target = str(row.get("gpo") or row.get("target") or row.get("dn") or "")
@@ -201,6 +202,11 @@ def analyze_effective_acls(rows, inventory, *, target_filter=None):
             if not sid or ace.get("kind") not in {"allow", "deny"} or not ace.get("applies_to_object", True): continue
             by_sid.setdefault(sid, []).append(ace)
         for sid, principal_aces in by_sid.items():
+            # The authenticated scanner identity is commonly the creator of
+            # a test/managed object.  Its creator-owner control is expected
+            # administrative context, not a low-privilege delegation finding.
+            if sid.lower() in expected_principal_sids:
+                continue
             low, context = _principal_is_low_priv(sid, inventory, maps)
             if not low: continue
             denied = 0; allowed = 0; evidence = []
