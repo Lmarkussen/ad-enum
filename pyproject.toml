@@ -12,5 +12,9 @@ dependencies = ["ldap3>=2.9", "pycryptodome>=3.20", "dnspython>=2.6", "gssapi>=1
 [project.scripts]
 ad-enum = "ad_enum.cli:main"
 
+[tool.setuptools.packages.find]
+include = ["ad_enum*"]
+exclude = ["lab*", "tests*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
