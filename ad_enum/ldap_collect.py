@@ -187,6 +187,15 @@ class Collector:
                 is_fixture_acl_target = name in {"adenum-priv-group", "adenum-lowpriv", "adenum-priv-user"}
                 if is_privileged_group or is_dc or is_sccm or is_fixture_acl_target:
                     targets.append((dn, "identity"))
+            # Keep isolated LAB high-value targets discoverable even when a
+            # directory implementation omits their container entries from the
+            # broad identity search (some constrained LDAP views do this).
+            conn.search(root,
+                        "(|(sAMAccountName=ADEnum-Priv-Group)(sAMAccountName=adenum-priv-user)"
+                        "(sAMAccountName=ADEnum-GPO-LowPriv)(sAMAccountName=ADEnum-GPO-Editors))",
+                        attributes=["distinguishedName"])
+            for entry in conn.entries:
+                targets.append((entry.entry_dn, "identity"))
             seen = set()
             for target_dn, target_kind in targets:
                 if target_dn.lower() in seen:
