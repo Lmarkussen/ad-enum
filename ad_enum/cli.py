@@ -19,7 +19,7 @@ from .network import build_dns_map
 from .gpo import normalize_gpos, collect_sysvol, collect_netlogon, inspect_file
 from .posture import (normalize_smb, normalize_trusts, normalize_gpo_acls, normalize_laps,
                       attach_gpo_links, normalize_security_descriptors, analyze_effective_acls)
-from .kerberos import roastable, account_exposure, privileged_account_sids
+from .kerberos import roastable, account_exposure, privileged_account_sids, account_security_context
 from .delegation import enumerate_delegation, enumerate_gmsa
 from .core.console import Console
 
@@ -106,7 +106,7 @@ def _results_text(root, target, external_results, inventory, cas, templates, all
         lines.append(Console.field(label, counts.get(key, 0)))
     lines.extend([Console.field("CAs", len(cas)), Console.field("Templates", len(templates)), "",
                   "Correlation", Console.field("Corroborated", corroborated),
-                  Console.field("Disagreements", disagreements), "", "Findings"])
+                  Console.field("Disagreements", disagreements), "", "Findings", ""])
     finding_lines = _finding_lines(all_findings)
     lines.extend(finding_lines or ["  None"])
     lines.extend(["", "Workspace", f"  {workspace.domain}/", ""])
@@ -297,6 +297,7 @@ def main():
     for record in inventory.records.get("users", {}).values():
         item = account_exposure(record)
         high_value = item.identifier in privileged_sids or bool(item.spns) or item.flags.get("DONT_REQ_PREAUTH") or item.flags.get("PASSWD_NOTREQD")
+        account_context = account_security_context(item, privileged=item.identifier in privileged_sids)
         if item.enabled and (item.flags.get("ENCRYPTED_TEXT_PWD_ALLOWED") or item.flags.get("USE_DES_KEY_ONLY") or
                              (item.flags.get("DONT_EXPIRE_PASSWORD") and high_value)):
             domain_security["account_flag_observations"].append({"account": item.username, "sid": item.identifier,
@@ -334,6 +335,18 @@ def main():
                 sources=[{"source": source, "observed": True} for source in item.sources],
                 evidence={"userAccountControl": item.attributes.get("userAccountControl"),
                           "privileged": item.identifier in privileged_sids, "service_account": bool(item.spns)},
+                status="corroborated" if len(item.sources) > 1 else "single-source", priority="medium",
+                workspace_artifacts=["DomainSecurity/inventory.json"], first_seen_scan=workspace.scan_id,
+                current_scan=workspace.scan_id).as_dict())
+        if item.identifier in privileged_sids and account_context["last_logon_age_days"] is not None and account_context["last_logon_age_days"] >= 180:
+            domain_security_findings.append(NormalizedFinding(
+                finding_id=f"account:stale-privileged:{item.identifier}", category="ACCOUNT",
+                rule="stale-privileged-account", title=f"Stale privileged account — {item.username}",
+                affected_object=item.username, domain=workspace.domain,
+                sources=[{"source": source, "observed": True} for source in item.sources],
+                evidence={"enabled": True, "lastLogonTimestamp": account_context["lastLogonTimestamp"],
+                          "last_logon_age_days": account_context["last_logon_age_days"],
+                          "timestamp_semantics": "replicated approximate value", "privileged": item.identifier in privileged_sids},
                 status="corroborated" if len(item.sources) > 1 else "single-source", priority="medium",
                 workspace_artifacts=["DomainSecurity/inventory.json"], first_seen_scan=workspace.scan_id,
                 current_scan=workspace.scan_id).as_dict())
@@ -652,17 +665,19 @@ def main():
     kerberos_findings = []
     for item in exposures["asrep"]:
         state = "enabled" if item.enabled else "disabled"
+        account_context = account_security_context(item, privileged=item.identifier in privileged_sids)
         kerberos_findings.append(NormalizedFinding(
             finding_id=f"kerberos:asrep:{item.identifier}", category="KERBEROS",
             rule="AS-REP-roastable", title=f"AS-REP roastable — {item.username} ({state})",
             affected_object=item.username, domain=workspace.domain,
             sources=[{"source": source, "observed": True} for source in item.sources],
             evidence={"enabled": item.enabled, "preauthentication_required": False,
-                      "userAccountControl": item.attributes.get("userAccountControl")},
+                      "userAccountControl": item.attributes.get("userAccountControl"), **account_context},
             status="corroborated" if len(item.sources) > 1 else "single-source", priority="medium", workspace_artifacts=["Kerberos/inventory.json"],
             first_seen_scan=workspace.scan_id, current_scan=workspace.scan_id).as_dict())
     for item in exposures["kerberoast"]:
         state = "enabled" if item.enabled else "disabled"
+        account_context = account_security_context(item, privileged=item.identifier in privileged_sids)
         kerberos_findings.append(NormalizedFinding(
             finding_id=f"kerberos:spn:{item.identifier}", category="KERBEROS",
             rule="Kerberoastable-account", title=f"Kerberoastable — {item.username} ({state})",
@@ -670,15 +685,16 @@ def main():
             sources=[{"source": source, "observed": True} for source in item.sources],
             evidence={"enabled": item.enabled, "spns": item.spns,
                       "userAccountControl": item.attributes.get("userAccountControl"),
-                      "pwdLastSet": item.attributes.get("pwdLastSet")},
+                      "pwdLastSet": item.attributes.get("pwdLastSet"), **account_context},
             status="corroborated" if len(item.sources) > 1 else "single-source", priority="medium", workspace_artifacts=["Kerberos/inventory.json"],
             first_seen_scan=workspace.scan_id, current_scan=workspace.scan_id).as_dict())
     for item in exposures["password_not_required"]:
+        account_context = account_security_context(item, privileged=item.identifier in privileged_sids)
         kerberos_findings.append(NormalizedFinding(
             finding_id=f"account:passwd-not-required:{item.identifier}", category="ACCOUNT",
             rule="PASSWD_NOTREQD", title=f"Password not required — {item.username}", affected_object=item.username,
             domain=workspace.domain, sources=[{"source": source, "observed": True} for source in item.sources],
-            evidence={"enabled": True, "userAccountControl": item.attributes.get("userAccountControl")},
+            evidence={"enabled": True, "userAccountControl": item.attributes.get("userAccountControl"), **account_context},
             status="corroborated" if len(item.sources) > 1 else "single-source", priority="medium", workspace_artifacts=["Kerberos/inventory.json"],
             first_seen_scan=workspace.scan_id, current_scan=workspace.scan_id).as_dict())
     delegation_findings = []

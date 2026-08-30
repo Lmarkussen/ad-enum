@@ -4,6 +4,7 @@ This module deliberately identifies exposure conditions only.  It never asks
 for AS-REP material, TGS tickets, or attempts authentication with findings.
 """
 from dataclasses import dataclass, asdict
+from datetime import datetime, timezone
 
 UAC = {
     "DONT_REQ_PREAUTH": 0x400000,
@@ -49,6 +50,31 @@ def account_exposure(record):
     return AccountExposure(str(_one(attrs.get("sAMAccountName"), record.identifier)),
                           record.identifier, not flags["ACCOUNTDISABLE"], list(spns), flags,
                           attrs, list(record.sources))
+
+def ad_filetime(value):
+    """Convert an AD FILETIME value to UTC, or return None for missing data."""
+    try:
+        raw = int(_one(value, 0) or 0)
+        if raw <= 0:
+            return None
+        return datetime.fromtimestamp(raw / 10_000_000 - 11644473600, tz=timezone.utc)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+def account_security_context(item, now=None, *, privileged=False):
+    """Return safe, approximate account-age context for reporting."""
+    now = now or datetime.now(timezone.utc)
+    password_set = ad_filetime(item.attributes.get("pwdLastSet"))
+    last_logon = ad_filetime(item.attributes.get("lastLogonTimestamp"))
+    return {
+        "privileged": bool(privileged),
+        "service_account": bool(item.spns),
+        "pwdLastSet": password_set.isoformat() if password_set else None,
+        "password_age_days": max(0, (now - password_set).days) if password_set else None,
+        "lastLogonTimestamp": last_logon.isoformat() if last_logon else None,
+        "last_logon_approximate": bool(last_logon),
+        "last_logon_age_days": max(0, (now - last_logon).days) if last_logon else None,
+    }
 
 PRIVILEGED_RIDS = {"512", "519", "544", "548", "549", "550", "551", "552"}
 PRIVILEGED_NAMES = {"domain admins", "enterprise admins", "administrators",

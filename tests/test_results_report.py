@@ -2,6 +2,8 @@ from ad_enum.cli import _results_text
 from ad_enum.core.console import Console
 from ad_enum.core.workspace import ScanWorkspace
 from ad_enum.inventory import DomainInventory
+from ad_enum.kerberos import ad_filetime, account_security_context, account_exposure
+from ad_enum.inventory import InventoryRecord
 
 
 def _report(tmp_path, findings):
@@ -42,3 +44,16 @@ def test_results_write_is_atomic_and_scan_history_can_hold_copy(tmp_path):
                          (workspace.root / "results.txt").read_text())
     assert (workspace.root / "results.txt").read_text() == "complete\n"
     assert (workspace.history_root / "results.txt").read_text() == "complete\n"
+
+
+def test_ad_filetime_and_account_age_are_approximate():
+    from datetime import datetime, timezone
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    old = int((now.timestamp() + 11644473600) * 10_000_000)
+    assert ad_filetime(old) == now
+    record = InventoryRecord("users", "S-1-5-21-1", {
+        "sAMAccountName": "admin", "userAccountControl": 0,
+        "pwdLastSet": [str(old)], "lastLogonTimestamp": [str(old)]}, ["native-ldap"])
+    context = account_security_context(account_exposure(record), now=now)
+    assert context["password_age_days"] == 0
+    assert context["last_logon_approximate"] is True
