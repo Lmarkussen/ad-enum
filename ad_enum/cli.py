@@ -100,7 +100,7 @@ def main():
     workspace = ScanWorkspace(a.output_dir, root, original_target=target)
     requested = []
     for module in (x.strip().lower() for x in a.modules.split(",") if x.strip()):
-        if module == "all": requested.extend(("bloodhound", "adcs-certipy", "ldapdomaindump", "netexec", "ldap", "adcs-native", "kerberos", "delegation", "sccm-discovery"))
+        if module == "all": requested.extend(("bloodhound", "adcs-certipy", "ldapdomaindump", "netexec", "ldap", "adcs-native", "kerberos", "delegation", "sccm-discovery", "relay"))
         elif module == "adcs": requested.extend(("ldap", "adcs-native", "adcs-certipy"))
         else: requested.append(module)
     plan = ExecutionPlanner().plan(requested or ["adcs-native"])
@@ -175,8 +175,24 @@ def main():
                 inventory.add("observed_hosts", f"{host.get('ip')}:{host.get('host', host.get('name', ''))}", host, "netexec")
     sccm_result = discover_sccm(inventory)
     workspace.write_json(workspace.findings_path("SCCM", "inventory.json"), sccm_result)
+    workspace.write_json(workspace.findings_path("SCCM", "topology.json"), sccm_result)
     coverage.add("SCCM / infrastructure discovery", "PASS", f"{len(sccm_result['hosts'])} candidate host(s)")
-    coverage.add("Relay enumeration", "NOT RUN", "future RelayKing-Depth integration")
+    relay_result = external_results.get("relay", {})
+    if relay_result.get("status") == "PASS":
+        relay_data = relay_result.get("result", {}).get("json")
+        workspace.write_json(workspace.findings_path("Relay", "inventory.json"),
+                             {"source": "relayking", "data": relay_data or {},
+                              "safe_mode": True})
+        relay_targets = []
+        for host in inventory.records.get("observed_hosts", {}).values():
+            if host.attributes.get("smb_signing") is False:
+                relay_targets.append(f"{host.attributes.get('ip', host.identifier)}\tSMB signing not required")
+        workspace.write_text(workspace.findings_path("Relay", "relay-targets.txt"),
+                             "\n".join(relay_targets) + ("\n" if relay_targets else ""))
+        coverage.add("Relay / safe exposure enumeration", "PASS", "RelayKing audit, no coercion")
+    else:
+        coverage.add("Relay / safe exposure enumeration", "NOT AVAILABLE" if relay_result.get("status") == "UNAVAILABLE" else "FAILED",
+                     relay_result.get("reason", "RelayKing not executed"))
     workspace.write_json(workspace.root / "scan.json", {
         "domain": root, "canonical_domain": workspace.domain, "target": target,
         "username": a.username, "scan_id": workspace.scan_id,
@@ -307,10 +323,21 @@ def main():
             evidence=item.as_dict(), status="single-source", priority="medium",
             workspace_artifacts=["Delegation/inventory.json"], first_seen_scan=workspace.scan_id,
             current_scan=workspace.scan_id).as_dict())
+    relay_findings = []
+    for host in inventory.records.get("observed_hosts", {}).values():
+        if host.attributes.get("smb_signing") is False:
+            relay_findings.append(NormalizedFinding(
+                finding_id=f"relay:smb-signing:{host.identifier}", category="RELAY",
+                rule="SMB-signing-not-required", title=f"SMB signing not required — {host.attributes.get('host', host.identifier)}",
+                affected_object=host.identifier, domain=workspace.domain,
+                sources=[{"source": source} for source in host.sources],
+                evidence={"host": host.attributes, "impact": "relay prerequisite"},
+                status="single-source", priority="medium", workspace_artifacts=["Relay/relay-targets.txt"],
+                first_seen_scan=workspace.scan_id, current_scan=workspace.scan_id).as_dict())
     workspace.write_json(workspace.findings_path("LDAP", "findings.json"), policy_findings + description_findings)
     workspace.write_json(workspace.findings_path("Kerberos", "findings.json"), kerberos_findings)
     workspace.write_json(workspace.findings_path("Delegation", "findings.json"), delegation_findings)
-    all_findings = finding_records + policy_findings + description_findings + kerberos_findings + delegation_findings
+    all_findings = finding_records + policy_findings + description_findings + kerberos_findings + delegation_findings + relay_findings
     workspace.write_json(workspace.findings_path("vulnerabilities", "findings.json"), all_findings)
     workspace.write_text(workspace.findings_path("vulnerabilities", "findings.txt"),
                           "\n".join(f"[{x['category']}] {x['title']}" for x in all_findings) + "\n")
