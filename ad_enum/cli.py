@@ -25,6 +25,7 @@ from .kerberos import roastable, account_exposure, privileged_account_sids, acco
 from .delegation import enumerate_delegation, enumerate_gmsa
 from .core.console import Console
 from .anonymous import probe_anonymous_ldap, probe_anonymous_smb
+from .reporting.html import write_html_report
 
 
 CATEGORY_ORDER = ("ADCS", "POLICY", "KERBEROS", "ACCOUNT", "DELEGATION",
@@ -142,6 +143,7 @@ def main():
     p.add_argument("--no-color", action="store_true")
     p.add_argument("--tool-output", action="store_true",
                    help="stream external collector output live (verbose; final report still rendered)")
+    p.add_argument("--html-out", metavar="FILE", help="optionally write a standalone HTML report")
     p.add_argument("--timeout", type=float, default=10)
     p.add_argument("--modules", default="all", help="comma-separated modules (default: all read-only collectors)")
     p.add_argument("--profile", default="default")
@@ -925,6 +927,34 @@ def main():
                                                                   "scan_id": workspace.scan_id})
     workspace.write_json(workspace.history_root / "coverage.json", coverage.as_dict())
     workspace.write_text(workspace.history_root / "results.txt", report_text)
+    if a.html_out:
+        try:
+            counts = inventory.counts()
+            html_model = {
+                "domain": root, "target": target, "workspace": f"{workspace.domain}/",
+                "banner": files("ad_enum").joinpath("assets/banner.txt").read_text(encoding="utf-8") + "\n@Evilhaxxor",
+                "category_order": CATEGORY_ORDER, "findings": all_findings,
+                "collectors": {"Native LDAP": "PASS", **{
+                    label: {"PASS": "PASS", "FAILED": "FAILED", "UNAVAILABLE": "NOT AVAILABLE"}.get(
+                        external_results.get(module_id, {}).get("status", "NOT CHECKED"),
+                        external_results.get(module_id, {}).get("status", "NOT CHECKED"))
+                    for module_id, label in (("bloodhound", "BloodHound"), ("adcs-certipy", "Certipy"),
+                                              ("ldapdomaindump", "LDAPDomainDump"), ("netexec", "NetExec"))}},
+                "inventory": {"Users": counts.get("users", 0), "Groups": counts.get("groups", 0),
+                              "Computers": counts.get("computers", 0),
+                              "Domain Controllers": counts.get("domain_controllers", 0),
+                              "Domains": counts.get("domains", 0), "gMSAs": counts.get("gmsa", 0),
+                              "CAs": len(cas), "Templates": len(templates)},
+                "credentials": discovered_credentials,
+                "sccm": {key: sccm_result.get(key, []) for key in
+                          ("site_code", "management_points", "distribution_points", "site_servers",
+                           "sms_providers", "sql_servers", "sup_wsus", "pxe", "status")},
+                "coverage": coverage.as_dict(),
+            }
+            write_html_report(a.html_out, html_model)
+            console.line(Console.field("HTML report", a.html_out))
+        except Exception as exc:
+            console.complete(f"HTML report generation failed: {type(exc).__name__}: {exc}", "WARNING")
     history_adcs = workspace.history_module_dir("ADCS")
     workspace.write_json(history_adcs / "findings.json", finding_records)
     workspace.write_json(history_adcs / "raw" / "ldap.json", collector.raw)

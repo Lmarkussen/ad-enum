@@ -39,6 +39,10 @@ Useful options include `--verbose`, `--debug`, `--tool-output`, `--no-color`, `-
 password on a command line can expose it through shell history or process
 inspection; omit `-p` to use the supported interactive prompt.
 
+Use `--html-out report.html` for an optional standalone browser-readable report.
+The default `results.txt` remains authoritative. `--tool-output` is an opt-in,
+very verbose troubleshooting mode for streaming external collector output.
+
 ## Example output
 
 ```text
@@ -105,9 +109,8 @@ python3 -m pytest
 python3 ad-enum.py doctor
 ```
 
-See [`docs/INSTALL.md`](docs/INSTALL.md), [`docs/OUTPUT.md`](docs/OUTPUT.md),
-and [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) for concise operational and
-contributor notes.
+See [`docs/INSTALL.md`](docs/INSTALL.md) and [`docs/OUTPUT.md`](docs/OUTPUT.md)
+for concise operational guidance.
 
 ## License
 
