@@ -30,4 +30,4 @@ def test_cred1_candidate_selection_uses_only_observed_distribution_points():
     assert cred1_candidates({"distribution_points": [
         {"host": "MECM.sccm.lab"}, {"host": "MECM.sccm.lab"}, {"host": "DP01.sccm.lab"}
     ]}) == ["MECM.sccm.lab", "DP01.sccm.lab"]
-    assert cred1_candidates({"management_points": [{"host": "MECM.sccm.lab"}]}) == []
+    assert cred1_candidates({"management_points": [{"host": "MECM.sccm.lab"}]}) == ["MECM.sccm.lab"]

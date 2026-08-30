@@ -202,10 +202,19 @@ def probe_management_points(management_points, timeout=5):
 
 
 def cred1_candidates(result):
-    """Return only independently observed distribution-point targets."""
+    """Return bounded SCCM DP/MP targets observed by SCCM discovery.
+
+    CRED-1's supported CinderPath assessment accepts a distribution point or
+    management point. Some environments publish the MP and omit a separate
+    DP object even though the host serves both roles, so a confirmed MP is a
+    valid, evidence-backed fallback; this never invents a host or scans a
+    generic SCCM candidate.
+    """
     result = result if isinstance(result, dict) else {}
     out = []
-    for item in result.get("distribution_points", []) or []:
+    observed = list(result.get("distribution_points", []) or [])
+    observed.extend(result.get("management_points", []) or [])
+    for item in observed:
         if not isinstance(item, dict):
             continue
         host = item.get("fqdn") or item.get("host") or item.get("name")
