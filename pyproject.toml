@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "AD-Enum"
-version = "0.1.0"
-description = "Protocol-native Active Directory Certificate Services enumeration"
+version = "1.0.0"
+description = "Read-only Active Directory reconnaissance and security-posture enumeration"
 requires-python = ">=3.11"
 dependencies = ["ldap3>=2.9", "pycryptodome>=3.20", "dnspython>=2.6", "gssapi>=1.9", "impacket>=0.12"]
 
