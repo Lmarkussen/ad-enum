@@ -35,6 +35,9 @@ $target = Get-ADComputer 'CLIENT'
 Set-ADComputer $target -PrincipalsAllowedToDelegateToAccount $source
 
 # gMSA creation requires a KDS root key; this lab has one configured.
+if (-not (Get-KdsRootKey -ErrorAction SilentlyContinue)) {
+  Add-KdsRootKey -EffectiveTime ((Get-Date).AddHours(-10))
+}
 $readers = Get-ADGroup 'ADEnum-gMSA-Readers' -ErrorAction SilentlyContinue
 if (-not $readers) { $readers = New-ADGroup -Name 'ADEnum-gMSA-Readers' -SamAccountName 'ADENUM-GMSA-RDR' -GroupScope Global -Path $ou -PassThru }
 if (-not (Get-ADServiceAccount 'adenum-gmsa' -ErrorAction SilentlyContinue)) {
