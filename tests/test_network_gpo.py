@@ -105,3 +105,13 @@ def test_effective_acl_recognizes_windows_generic_composite_masks():
     rows = [{"target": "GPO", "aces": [{"sid": "S-1-5-21-1-2-3-1101",
         "kind": "allow", "mask": 0x20028, "applies_to_object": True}]}]
     assert "GenericWrite" in analyze_effective_acls(rows, inv)[0]["effective_rights"]
+
+
+def test_gpo_scope_is_retained_on_effective_right_observation():
+    inv = DomainInventory()
+    inv.add("users", "S-1-5-21-1-2-3-1101", {"sAMAccountName": "alice", "objectClass": ["user"]}, "native-ldap")
+    row = {"gpo": "Policy", "scope": {"targets": ["OU=ADEnum-Lab"]}, "aces": [{
+        "sid": "S-1-5-21-1-2-3-1101", "kind": "allow", "mask": 0x20028,
+        "applies_to_object": True}]}
+    result = analyze_effective_acls([row], inv)
+    assert result and result[0]["target"] == "Policy"

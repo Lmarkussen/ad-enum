@@ -25,6 +25,12 @@ def _one(value, default=""):
 def enumerate_delegation(inventory):
     records = []
     dc_ids = set(inventory.records.get("domain_controllers", {}))
+    names = {}
+    for kind_records in inventory.records.values():
+        for record in kind_records.values():
+            names[str(record.identifier).lower()] = str(_one(
+                record.attributes.get("sAMAccountName") or record.attributes.get("name"),
+                record.identifier))
     for kind in ("users", "computers"):
         for record in inventory.records.get(kind, {}).values():
             exposure = account_exposure(record) if kind == "users" else None
@@ -51,11 +57,15 @@ def enumerate_delegation(inventory):
             rbcd = _one(attrs.get("msDS-AllowedToActOnBehalfOfOtherIdentity"), b"")
             if rbcd:
                 aces, warnings = parse_security_descriptor_safe(rbcd)
-                principals = [{"sid": ace.sid, "mask": ace.mask, "ace_type": ace.ace_type,
+                principals = [{"sid": ace.sid, "name": names.get(ace.sid.lower(), ace.sid),
+                               "mask": ace.mask, "ace_type": ace.ace_type,
                                "kind": ace.kind, "raw": ace.raw.hex()} for ace in aces if ace.kind == "allow"]
                 records.append(DelegationRecord(name, kind[:-1], sid, enabled, "rbcd",
                     principals=principals, sources=list(record.sources),
-                    evidence={"warnings": warnings, "ace_count": len(aces)}))
+                    evidence={"warnings": warnings, "ace_count": len(aces),
+                              "impact": "allowed principal may impersonate users to Kerberos services on the target",
+                              "principal_context": [{"sid": p["sid"], "name": p["name"],
+                                                     "known": p["sid"].lower() in names} for p in principals]}))
     return records
 
 def enumerate_gmsa(inventory):
