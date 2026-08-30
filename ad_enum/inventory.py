@@ -114,6 +114,14 @@ class DomainInventory:
                 old = record.attributes.get(name)
                 if old not in (None, "", [], {}) and value in (None, "", [], {}):
                     continue
+                # Security descriptors are authoritative binary evidence from
+                # native LDAP. Structured adapters may expose the same field
+                # as a JSON/base64 placeholder; never replace usable native
+                # evidence with that representation during correlation.
+                if (name in {"nTSecurityDescriptor", "msDS-AllowedToActOnBehalfOfOtherIdentity",
+                             "msDS-GroupMSAMembership"} and
+                        old not in (None, "", [], {}) and value not in (None, "", [], {})):
+                    continue
                 if isinstance(old, (bytes, bytearray)) and isinstance(value, dict):
                     continue
                 record.attributes[name] = value

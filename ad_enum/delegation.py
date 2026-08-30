@@ -1,5 +1,6 @@
 """Read-only AD delegation normalization."""
 from dataclasses import asdict, dataclass, field
+import base64
 from .kerberos import UAC, account_exposure
 from .security import parse_security_descriptor_safe
 
@@ -21,6 +22,13 @@ class DelegationRecord:
 
 def _one(value, default=""):
     return value[0] if isinstance(value, list) and value else (default if value is None else value)
+
+def _binary(value):
+    value = _one(value, b"")
+    if isinstance(value, dict) and "base64" in value:
+        try: return base64.b64decode(value["base64"])
+        except Exception: return b""
+    return value
 
 def enumerate_delegation(inventory):
     records = []
@@ -54,7 +62,7 @@ def enumerate_delegation(inventory):
                     targets=list(allowed), protocol_transition=transition,
                     sources=list(record.sources), evidence={"msDS-AllowedToDelegateTo": allowed,
                     "userAccountControl": flags}))
-            rbcd = _one(attrs.get("msDS-AllowedToActOnBehalfOfOtherIdentity"), b"")
+            rbcd = _binary(attrs.get("msDS-AllowedToActOnBehalfOfOtherIdentity"))
             if rbcd:
                 aces, warnings = parse_security_descriptor_safe(rbcd)
                 principals = [{"sid": ace.sid, "name": names.get(ace.sid.lower(), ace.sid),
@@ -74,7 +82,7 @@ def enumerate_gmsa(inventory):
     for record in inventory.records.get("gmsa", {}).values():
         attrs = record.attributes
         principals, warnings = [], []
-        sd = _one(attrs.get("msDS-GroupMSAMembership"), b"")
+        sd = _binary(attrs.get("msDS-GroupMSAMembership"))
         if sd:
             aces, warnings = parse_security_descriptor_safe(sd)
             principals = [{"sid": ace.sid, "kind": ace.kind, "mask": ace.mask,
