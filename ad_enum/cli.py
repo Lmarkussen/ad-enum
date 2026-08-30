@@ -102,7 +102,7 @@ def _finding_lines(findings):
 
 
 def _results_text(root, target, external_results, inventory, cas, templates, all_findings,
-                  workspace, *, corroborated=0, disagreements=0):
+                  workspace, *, corroborated=0, disagreements=0, smb_shares=None):
     lines = ["AD-Enum", "", "Target",
              Console.field("Domain", root), Console.field("DC", target), "",
              "Collectors", Console.field("Native LDAP", "PASS")]
@@ -119,7 +119,22 @@ def _results_text(root, target, external_results, inventory, cas, templates, all
         lines.append(Console.field(label, counts.get(key, 0)))
     lines.extend([Console.field("CAs", len(cas)), Console.field("Templates", len(templates)), "",
                   "Correlation", Console.field("Corroborated", corroborated),
-                  Console.field("Disagreements", disagreements), "", "Findings"])
+                  Console.field("Disagreements", disagreements)])
+    shares = smb_shares or []
+    if shares:
+        lines.extend(["", "SMB Share Access"])
+        for share in shares:
+            if share.get("writable"):
+                access = "READ / WRITE"
+            elif share.get("readable") is True:
+                access = "READ"
+            elif share.get("readable") is False:
+                access = "DENIED"
+            else:
+                access = "UNKNOWN"
+            lines.append(f"  {share.get('host') or share.get('ip', 'unknown')}\\{share.get('share', 'unknown')} ........ {access}")
+            lines.append(f"    Path ............. {share.get('unc', 'unknown')}")
+    lines.extend(["", "Findings"])
     finding_lines = _finding_lines(all_findings)
     lines.extend(finding_lines or ["  None"])
     lines.extend(["", "Workspace", f"  {workspace.domain}/", ""])
@@ -991,7 +1006,8 @@ def main():
                f"{coverage.render()}\n")
     workspace.write_text(workspace.root / "summary.txt", summary)
     report_text = _results_text(root, target, external_results, inventory, cas, templates, all_findings,
-                                workspace, corroborated=len(statuses), disagreements=len(disagreements))
+                                workspace, corroborated=len(statuses), disagreements=len(disagreements),
+                                smb_shares=share_inventory)
     workspace.write_text_atomic(workspace.root / "results.txt", report_text)
     # Keep a non-destructive historical copy for this scan ID.
     workspace.write_json(workspace.history_root / "scan.json", {"domain": root, "target": target,
@@ -1017,6 +1033,7 @@ def main():
                               "Domains": counts.get("domains", 0), "gMSAs": counts.get("gmsa", 0),
                               "CAs": len(cas), "Templates": len(templates)},
                 "credentials": discovered_credentials,
+                "smb_shares": share_inventory,
                 "sccm": {key: sccm_result.get(key, []) for key in
                           ("site_code", "management_points", "distribution_points", "site_servers",
                            "sms_providers", "sql_servers", "sup_wsus", "pxe", "status")},
@@ -1064,6 +1081,20 @@ def main():
         console.line(Console.field(label, inventory.counts().get(key, 0)))
     console.line(Console.field("CAs", len(cas)))
     console.line(Console.field("Templates", len(templates)))
+    if share_inventory:
+        console.line()
+        console.heading("SMB Share Access")
+        for share in share_inventory:
+            if share.get("writable"):
+                access = "READ / WRITE"
+            elif share.get("readable") is True:
+                access = "READ"
+            elif share.get("readable") is False:
+                access = "DENIED"
+            else:
+                access = "UNKNOWN"
+            console.line(f"  {share.get('host') or share.get('ip', 'unknown')}\\{share.get('share', 'unknown')} ........ {access}")
+            console.line(f"    Path ............. {share.get('unc', 'unknown')}")
     console.line()
     console.heading("Findings")
     if not all_findings:

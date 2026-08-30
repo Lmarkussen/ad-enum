@@ -25,6 +25,21 @@ def test_results_report_contains_consolidated_group_and_target_secret(tmp_path):
     assert "\x1b[" not in report
 
 
+def test_results_report_shows_normalized_smb_share_access(tmp_path):
+    report = _results_text("SCCM.LAB", "dc.sccm.lab", {}, DomainInventory(), [], [], [],
+                           ScanWorkspace(tmp_path, "sccm.lab"), smb_shares=[
+                               {"host": "FILE01", "share": "Public", "unc": "\\\\FILE01\\Public", "readable": True, "writable": False},
+                               {"host": "FILE01", "share": "Deploy$", "unc": "\\\\FILE01\\Deploy$", "readable": True, "writable": True},
+                               {"host": "FILE01", "share": "Finance", "unc": "\\\\FILE01\\Finance", "readable": False, "writable": False},
+                               {"host": "FILE01", "share": "Unknown", "unc": "\\\\FILE01\\Unknown"},
+                           ])
+    assert "SMB Share Access" in report
+    assert "Public ........ READ" in report
+    assert "Deploy$ ........ READ / WRITE" in report
+    assert "Finance ........ DENIED" in report
+    assert "Unknown ........ UNKNOWN" in report
+
+
 def test_console_field_has_one_status_column():
     lines = [Console.field(label, "PASS") for label in
              ("Native LDAP", "BloodHound", "Certipy", "LDAPDomainDump", "NetExec")]

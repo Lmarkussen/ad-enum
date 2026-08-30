@@ -39,6 +39,16 @@ def test_html_is_standalone_escaped_and_contains_core_sections(tmp_path):
     assert destination.is_file()
 
 
+def test_html_shows_smb_share_access():
+    model = _model()
+    model["smb_shares"] = [{"host": "FILE01", "share": "Deploy$", "unc": "\\\\FILE01\\Deploy$",
+                            "readable": True, "writable": True}]
+    report = render_html(model)
+    assert "SMB Share Access" in report
+    assert "READ / WRITE" in report
+    assert "FILE01" in report
+
+
 def test_sccm_artifact_policy_is_bounded():
     limits = SCCMArtifactLimits(max_files=2, max_file_bytes=10, max_total_bytes=15)
     selected = bounded_artifact_candidates([{"name": "a", "size": 10}, {"name": "b", "size": 6}, {"name": "c", "size": 1}], limits)
