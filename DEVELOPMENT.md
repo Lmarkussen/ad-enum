@@ -237,3 +237,24 @@ the account SAM name limit is 15 characters). It has
 decoded reader SID and restoring the dedicated group returned the original
 state. A KDS root key was required and was created as a lab-only prerequisite;
 no managed password was read.
+
+## SCCM-specific publication validation
+
+The live collector now searches the SCCM System Management container and
+serviceConnectionPoint objects, de-duplicates overlapping LDAP results by DN,
+and retains the LDAP-shaped records under the SCCM raw workspace. In the
+current lab it observed `CN=SMS-Site-P01` (`mSSMSSite`) and
+`CN=SMS-MP-P01-MECM.SCCM.LAB` (`mSSMSManagementPoint`), establishing site code
+`P01` and a confirmed management point at `MECM.sccm.lab`. The
+`MECM-Remote-Installation-Services` object is retained as a service
+administration-point role hint; it is not promoted to a DP or PXE role.
+
+The read-only MP metadata endpoints
+`/SMS_MP/.sms_aut?MPLIST` and
+`/SMS_MP/.sms_aut?MPKEYINFORMATION` returned SCCM XML over HTTP. The parsed
+metadata confirmed `MECM.sccm.lab`, site `P01`, and `SSLState=0`; certificate
+and trusted-root material in the response is deliberately not retained by the
+probe. HTTPS probing failed TLS validation because the lab did not present a
+usable trusted server certificate. PXE, DP, SUP/WSUS, SMS Provider, and the
+SCCM SQL association remain unknown/candidate unless a role-specific source
+confirms them. No SCCM content or secrets were downloaded.

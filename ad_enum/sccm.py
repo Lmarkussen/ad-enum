@@ -166,6 +166,10 @@ def probe_management_points(management_points, timeout=5):
                                                  for name in ("SITECODE", "ASSIGNMENTSITECODE", "MACHINENAME", "FQDN")}
                 except (urllib.error.URLError, TimeoutError, OSError, ET.ParseError) as exc:
                     item["error"] = type(exc).__name__
+                    # Keep a bounded diagnostic for TLS/DNS troubleshooting,
+                    # while never retaining response bodies or credentials.
+                    if isinstance(exc, urllib.error.URLError):
+                        item["error_detail"] = str(exc.reason)[:240]
                 results.append(item)
     return results
 
