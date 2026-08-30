@@ -156,9 +156,27 @@ def main():
                                   "reason": "no direct unsigned-bind policy/protocol observation"},
                      "channel_binding": {"state": "UNKNOWN", "evidence": [],
                                           "reason": "LDAPS channel binding cannot be assessed without a valid TLS service"}}
+    ldap_security_findings = []
+    # A successful authenticated NTLM bind over plain LDAP is a direct,
+    # read-only observation that the DC accepts an unsigned bind.  Do not
+    # infer this from RelayKing, and do not claim a result for Kerberos SASL
+    # or LDAPS transports that provide different protection semantics.
+    if not a.ldaps and not a.force_kerb:
+        ldap_security["signing"] = {"state": "NOT REQUIRED",
+                                     "evidence": ["authenticated NTLM bind over LDAP/389 succeeded"],
+                                     "reason": "plain LDAP bind accepted"}
+        ldap_security_findings.append(NormalizedFinding(
+            finding_id="ldap:signing-not-required", category="LDAP", rule="ldap-signing-not-required",
+            title=f"LDAP signing not required — {context.dc_hostname or target}", affected_object=context.dc_hostname or target,
+            domain=workspace.domain, sources=[{"source": "native-ldap", "observed": True}],
+            evidence={"state": "NOT REQUIRED", "impact": "NTLM authentication may be relayable to LDAP when other prerequisites are satisfied"},
+            status="single-source", priority="medium", workspace_artifacts=["LDAPSecurity/inventory.json"],
+            first_seen_scan=workspace.scan_id, current_scan=workspace.scan_id).as_dict())
     workspace.write_json(workspace.findings_path("LDAPSecurity", "inventory.json"), ldap_security)
-    workspace.write_json(workspace.findings_path("LDAPSecurity", "findings.json"), [])
-    workspace.write_text(workspace.module_dir("LDAPSecurity") / "findings.txt", "")
+    workspace.write_json(workspace.findings_path("LDAPSecurity", "findings.json"), ldap_security_findings)
+    workspace.write_text(workspace.module_dir("LDAPSecurity") / "findings.txt",
+                         "\n".join(f"[{x['category']}] {x['title']}" for x in ldap_security_findings) +
+                         ("\n" if ldap_security_findings else ""))
     findings, comparisons, coverage, dangling, duplicates = scan(cas, templates, certipy=certipy)
     exposures = roastable(inventory)
     delegation_records = enumerate_delegation(inventory)
@@ -523,7 +541,7 @@ def main():
                                         and x.get("evidence", {}).get("enabled") is False)]
     all_findings = (finding_records + policy_findings + description_findings + active_kerberos_findings +
                     delegation_findings + relay_findings + smb_findings + acl_findings +
-                    [x["normalized"] for x in gpo_findings])
+                    ldap_security_findings + [x["normalized"] for x in gpo_findings])
     workspace.write_json(workspace.findings_path("vulnerabilities", "findings.json"), all_findings)
     workspace.write_text(workspace.findings_path("vulnerabilities", "findings.txt"),
                           "\n".join(f"[{x['category']}] {x['title']}" for x in all_findings) + "\n")
