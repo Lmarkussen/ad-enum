@@ -35,8 +35,8 @@ opt-in at runtime.
 ## Quick start
 
 ```bash
-python3 ad-enum.py -u localuser -p 'password' \
-  -domain sccm.lab -dc-ip 10.1.10.40
+python3 ad-enum.py -u scanuser -p '<password>' \
+  -domain example.local -dc-ip 192.0.2.10
 ```
 
 Useful options include `--verbose`, `--debug`, `--tool-output`, `--no-color`, `--ldaps`,
@@ -124,7 +124,8 @@ python3 ad-enum.py doctor
 ```
 
 See [`docs/INSTALL.md`](docs/INSTALL.md) and [`docs/OUTPUT.md`](docs/OUTPUT.md)
-for concise operational guidance.
+for concise operational guidance. See [FINDINGS_GUIDE.md](FINDINGS_GUIDE.md)
+for findings interpretation and remediation guidance.
 
 ## License
 
