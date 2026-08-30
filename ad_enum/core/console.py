@@ -55,5 +55,9 @@ class Console:
     def banner(self, text):
         """Render the packaged artwork without changing its text."""
         colors = ("navy", "navy", "blue", "blue", "steel")
-        for index, line in enumerate(text.splitlines()):
+        artwork = text.splitlines()
+        for index, line in enumerate(artwork):
             self.line(self.paint(line, colors[index % len(colors)] if self.colors else None))
+        width = max((len(line) for line in artwork), default=0)
+        handle = "@Evilhaxxor"
+        self.line(self.paint(handle.center(width), "steel" if self.colors else None))
