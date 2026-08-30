@@ -16,5 +16,8 @@ ad-enum = "ad_enum.cli:main"
 include = ["ad_enum*"]
 exclude = ["lab*", "tests*"]
 
+[tool.setuptools.package-data]
+ad_enum = ["assets/banner.txt"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

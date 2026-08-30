@@ -11,7 +11,10 @@ class BloodHoundAdapter(ToolAdapter):
                 "-ns", dc_ip, "-c", "All", "--zip", "-op", str(Path(output_dir) / "bloodhound")]
 
     def run(self, *, context):
-        raw = context.workspace.raw_dir("BloodHound")
+        # BloodHound's generated JSON/ZIP files are source artifacts; keep
+        # them directly in the module directory rather than nesting them in
+        # an AD-Enum-specific raw directory.
+        raw = context.workspace.module_dir("BloodHound")
         command = self.build_command(domain=context.domain, username=context.auth.username,
                                      password=context.auth.password, dc_ip=context.dc_ip,
                                      output_dir=raw)

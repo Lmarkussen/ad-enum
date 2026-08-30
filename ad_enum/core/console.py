@@ -8,11 +8,12 @@ class Console:
         self.debug = debug
         enabled = not no_color and getattr(self.stream, "isatty", lambda: False)()
         self.colors = enabled
-        names = ("green", "red", "yellow", "cyan", "dim", "reset")
+        names = ("green", "red", "yellow", "cyan", "blue", "bright_cyan", "dim", "reset")
         self.c = {x: "" for x in names}
         if enabled:
             self.c.update({"green": "\033[32m", "red": "\033[31m", "yellow": "\033[33m",
-                           "cyan": "\033[36m", "dim": "\033[2m", "reset": "\033[0m"})
+                           "cyan": "\033[36m", "blue": "\033[34m", "bright_cyan": "\033[96m",
+                           "dim": "\033[2m", "reset": "\033[0m"})
 
     def paint(self, text, color=None):
         return f"{self.c.get(color, '')}{text}{self.c['reset'] if color else ''}"
@@ -32,3 +33,9 @@ class Console:
 
     def debug_line(self, text):
         if self.debug: self.line(self.paint(f"[DEBUG] {text}", "dim"))
+
+    def banner(self, text):
+        """Render the packaged artwork without changing its text."""
+        colors = ("blue", "blue", "cyan", "cyan", "bright_cyan")
+        for index, line in enumerate(text.splitlines()):
+            self.line(self.paint(line, colors[index % len(colors)] if self.colors else None))

@@ -2,6 +2,7 @@ import argparse
 import sys
 import ipaddress
 import shutil
+from importlib.resources import files
 from .ldap_collect import Collector
 from .adcs import scan
 from .adapters.certipy import CertipyAdapter
@@ -52,6 +53,7 @@ def main():
     p.add_argument("--output-dir", default=".")
     a = p.parse_args(argv)
     console = Console(no_color=a.no_color, verbose=a.verbose, debug=a.verbose)
+    console.banner(files("ad_enum").joinpath("assets/banner.txt").read_text(encoding="utf-8"))
     if a.password is None:
         import getpass; a.password = getpass.getpass("LDAP password: ")
     target = a.dc or a.domain
@@ -60,7 +62,6 @@ def main():
         bind_domain = ""
     except ValueError:
         bind_domain = a.domain
-    console.line("AD-Enum")
     console.line(); console.line("Checking credentials...")
     auto_state = None
     if a.auto_config or a.sync_time:
@@ -615,27 +616,50 @@ def main():
     if not all_findings:
         console.line("  None")
     else:
+        category_order = ("ADCS", "POLICY", "KERBEROS", "ACCOUNT", "DELEGATION",
+                          "GPO", "ACL", "LAPS", "LDAP", "SMB", "RELAY", "SCCM", "TRUSTS")
+        grouped = {category: [] for category in category_order}
         for item in all_findings:
             # Disabled Kerberoastable principals remain in JSON evidence, but
             # should not look like currently actionable findings in normal UI.
             if (item.get("rule") == "Kerberoastable-account"
                     and item.get("title", "").endswith("(disabled)")):
                 continue
+            grouped.setdefault(item.get("category", "OTHER"), []).append(item)
+        for category in category_order + tuple(x for x in grouped if x not in category_order):
+            items = grouped.get(category, [])
+            if not items: continue
             console.line()
-            display_status = item.get("status")
-            if item.get("rule") == "ESC1" and display_status in {"disagreement", "live-confirmed disagreement"}:
-                display_status = "confirmed"
-            console.status(f"  [{item['category']}] {item['title']}", display_status)
-            if item["rule"] == "ESC1":
-                console.line(f"    Status ........... {display_status.upper()}")
-                if item.get("status") in {"disagreement", "live-confirmed disagreement"}:
-                    console.line("    Note ............. Certipy did not classify this template as ESC1")
-            elif item["rule"] == "Kerberoastable-account":
-                spns = item.get("evidence", {}).get("spns", [])
-                console.line(f"    SPNs ............. {len(spns)}")
-                console.line(f"    Status ........... {item.get('status', '').upper()}")
-            elif item.get("status") not in {"single-source", "corroborated"}:
-                console.line(f"    Status ........... {item.get('status', '').upper()}")
+            console.heading(f"------------[ {category} ]------------")
+            for item in items:
+                display_status = item.get("status")
+                if item.get("rule") == "ESC1" and display_status in {"disagreement", "live-confirmed disagreement"}:
+                    display_status = "confirmed"
+                title = item["title"]
+                evidence = item.get("evidence", {})
+                if item.get("category") == "ACL":
+                    title = f"Account control — {item.get('affected_object', title)}"
+                console.status(f"  {title}", display_status)
+                if item["rule"] == "ESC1":
+                    console.line(f"    Status ........... {display_status.upper()}")
+                    if item.get("status") in {"disagreement", "live-confirmed disagreement"}:
+                        console.line("    Note ............. Certipy did not classify this template as ESC1")
+                elif item["rule"] == "Kerberoastable-account":
+                    console.line(f"    State ............ {'enabled' if evidence.get('enabled') else 'disabled'}")
+                    console.line(f"    SPNs ............. {len(evidence.get('spns', []))}")
+                    console.line(f"    Status ........... {item.get('status', '').upper()}")
+                elif item.get("category") == "ACL":
+                    console.line(f"    Principal ........ {evidence.get('principal_sid', 'unknown')}")
+                    console.line(f"    Rights ........... {evidence.get('effective_rights', '')}")
+                    console.line("    Impact ........... Low-privileged principal can alter or control this object")
+                elif item.get("category") == "DELEGATION" and item.get("rule") == "rbcd":
+                    console.line(f"    Allowed principal  {evidence.get('principal_name') or evidence.get('principal_sid', 'unknown')}")
+                    console.line(f"    Impact ........... {evidence.get('impact', 'May impersonate users to Kerberos services on the target')}")
+                elif item.get("rule", "").startswith("gpo-"):
+                    if evidence.get("file"): console.line(f"    File ............. {evidence['file']}")
+                    if evidence.get("type"): console.line(f"    Type ............. {evidence['type']}")
+                elif item.get("status") not in {"single-source", "corroborated"}:
+                    console.line(f"    Status ........... {item.get('status', '').upper()}")
     console.line()
     console.heading("Workspace")
     console.line(console.paint(f"  {workspace.domain}/", "dim"))
