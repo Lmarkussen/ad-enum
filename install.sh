@@ -32,6 +32,12 @@ run_logged() {
   warn "Installer log retained at $log"
   return 1
 }
+nxc_runtime_ok() {
+  command -v nxc >/dev/null 2>&1 || return 1
+  local output
+  output="$(timeout 4s nxc smb 127.0.0.1 --timeout 1 --no-progress 2>&1 || true)"
+  [[ "$output" != *"ImportError"* && "$output" != *"ModuleNotFoundError"* ]]
+}
 
 say "Checking system requirements"
 apt_packages=()
@@ -73,7 +79,15 @@ if [[ "$mode" != minimal ]]; then
   say "Installing Impacket"; run_logged "Impacket installation" pipx install --force impacket
   ok "Impacket installed"
   if command -v nxc >/dev/null 2>&1; then
-    ok "NetExec installed"
+    if nxc_runtime_ok; then
+      ok "NetExec installed and protocol loader is available"
+    elif command -v pipx >/dev/null 2>&1; then
+      warn "Existing NetExec is present but its protocol loader failed; repairing with pipx"
+      run_logged "NetExec installation" pipx install --force netexec
+      nxc_runtime_ok && ok "NetExec installed and protocol loader is available" || warn "NetExec remains unusable; inspect its bundled dependencies"
+    else
+      warn "NetExec is present but its protocol loader failed; install a supported NetExec build with pipx"
+    fi
   else
     say "Installing NetExec"
     # Use the maintained PyPI package through the same isolated pipx path as

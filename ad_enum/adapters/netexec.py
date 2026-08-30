@@ -17,7 +17,7 @@ class NetExecAdapter(ToolAdapter):
                 "-d", domain, "--pass-pol", "--no-progress"]
 
     def build_access_command(self, *, protocol, username, password, target,
-                             help_text="", force_kerb=False):
+                             domain="", port=None, help_text="", force_kerb=False):
         """Build one authentication-only NetExec attempt.
 
         The command deliberately contains no module action, command, shell,
@@ -29,6 +29,12 @@ class NetExecAdapter(ToolAdapter):
             raise ValueError(f"unsupported safe access protocol: {protocol}")
         command = [self.executable, protocol, target, "-u", username, "-p", password]
         advertised = str(help_text).lower()
+        if domain and ("-d domain" in advertised or "--domain domain" in advertised):
+            command.extend(["-d", domain])
+        defaults = {"smb": 445, "ldap": 389, "ssh": 22, "rdp": 3389,
+                    "winrm": 5985, "mssql": 1433}
+        if port and int(port) != defaults.get(protocol) and "--port" in advertised:
+            command.extend(["--port", str(port)])
         if "--no-progress" in advertised:
             command.append("--no-progress")
         if "--no-bruteforce" in advertised:
@@ -62,7 +68,13 @@ class NetExecAdapter(ToolAdapter):
         protocol_map = {"SMB": "smb", "LDAP": "ldap", "SSH": "ssh",
                         "RDP": "rdp", "WINRM": "winrm", "MSSQL": "mssql"}
         for item in targets or []:
-            protocol = str(item.get("protocol", item.get("service", ""))).upper()
+            service_name = str(item.get("protocol", item.get("service", ""))).upper()
+            # NetExec's LDAP adapter has no advertised LDAPS mode in the
+            # installed version; do not silently turn an LDAPS observation
+            # into an unencrypted or incorrectly configured auth attempt.
+            if service_name == "LDAPS":
+                continue
+            protocol = service_name
             protocol = next((key for key in protocol_map if key in protocol), "")
             if not protocol or protocol not in SAFE_ACCESS_PROTOCOLS:
                 continue
@@ -78,7 +90,8 @@ class NetExecAdapter(ToolAdapter):
                 help_cache[protocol] = self.access_help(protocol)
             command = self.build_access_command(
                 protocol=protocol, username=context.auth.username,
-                password=context.auth.password, target=target,
+                password=context.auth.password, target=target, domain=context.domain,
+                port=item.get("port"),
                 help_text=help_cache[protocol], force_kerb=context.force_kerb)
             try:
                 proc = self.execute(command, cwd=context.workspace.raw_dir("NetExec"),

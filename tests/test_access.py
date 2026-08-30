@@ -43,3 +43,10 @@ def test_netexec_access_command_has_no_post_auth_actions():
     assert "--no-progress" in command
     assert "--no-bruteforce" in command
     assert not any(x in command for x in ("-x", "--exec-method", "--command", "--shell"))
+
+
+def test_netexec_access_command_preserves_nondefault_port():
+    command = NetExecAdapter().build_access_command(
+        protocol="mssql", username="user", password="secret", target="10.0.0.5",
+        port=1444, help_text="--port PORT")
+    assert command[-2:] == ["--port", "1444"]
