@@ -37,6 +37,11 @@ say "Checking system requirements"
 apt_packages=()
 command -v python3 >/dev/null 2>&1 || apt_packages+=(python3)
 python3 -c 'import venv' >/dev/null 2>&1 || apt_packages+=(python3-venv)
+# gssapi is a core dependency for --force-kerb and may need to compile on
+# Kali/Python versions without a published wheel.
+python_header="/usr/include/$(python3 -c 'import sys; print("python" + str(sys.version_info.major) + "." + str(sys.version_info.minor))')/Python.h"
+[[ -f "$python_header" ]] || apt_packages+=(python3-dev)
+[[ -f /usr/include/krb5.h ]] || apt_packages+=(libkrb5-dev)
 if [[ "$mode" != minimal ]] && ! command -v pipx >/dev/null 2>&1; then apt_packages+=(pipx); fi
 if [[ "$mode" != minimal ]] && ! command -v nxc >/dev/null 2>&1; then apt_packages+=(netexec); fi
 if [[ "$mode" != minimal ]] && ! command -v kinit >/dev/null 2>&1; then apt_packages+=(krb5-user); fi
