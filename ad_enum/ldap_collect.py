@@ -186,8 +186,10 @@ class Collector:
                 is_dc = ("computer" in classes and
                          (bool(uac & 0x2000) or primary == 516 or
                           "OU=DOMAIN CONTROLLERS" in dn.upper() or "ldap/" in spns.lower()))
-                is_sccm = any(token in (name + " " + dn.lower())
-                              for token in ("mecm", "sccm", "sms", "mssql"))
+                # Match SCCM identity names, not the enclosing domain DN
+                # (every object in an SCCM.LAB directory contains ``sccm`` in
+                # its DN and would otherwise become an ACL target).
+                is_sccm = any(token in name for token in ("mecm", "sccm", "sms", "mssql"))
                 is_fixture_acl_target = name in {"adenum-priv-group", "adenum-lowpriv", "adenum-priv-user"}
                 if is_privileged_group or is_dc or is_sccm or is_fixture_acl_target:
                     targets.append((dn, "identity"))
