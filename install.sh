@@ -71,7 +71,15 @@ if [[ "$mode" != minimal ]]; then
   done
   say "Installing Impacket"; run_logged "Impacket installation" pipx install --force impacket
   ok "Impacket installed"
-  if command -v nxc >/dev/null 2>&1; then ok "NetExec installed"; else warn "NetExec is not available; default toolset is incomplete"; fi
+  if command -v nxc >/dev/null 2>&1; then
+    ok "NetExec installed"
+  else
+    say "Installing NetExec"
+    # Use the maintained PyPI package through the same isolated pipx path as
+    # the other external collectors. Do not guess legacy CME flags here.
+    run_logged "NetExec installation" pipx install --force netexec
+    if command -v nxc >/dev/null 2>&1; then ok "NetExec installed"; else warn "NetExec is not available; default toolset is incomplete"; fi
+  fi
 fi
 
 say "Running AD-Enum doctor"

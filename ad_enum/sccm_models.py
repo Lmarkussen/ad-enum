@@ -141,6 +141,34 @@ def normalize_sccm_capabilities(data):
     return result
 
 
+def normalize_cred1_evidence(data):
+    """Normalize safe CRED-1 evidence without decrypting protected media."""
+    data = data if isinstance(data, dict) else {}
+    return {
+        "dp": data.get("dp", data.get("host", "")),
+        "site_code": data.get("site_code", ""),
+        "pxe": str(data.get("pxe", "UNKNOWN")).upper(),
+        "wds": str(data.get("wds", "UNKNOWN")).upper(),
+        "tftp": str(data.get("tftp", "UNKNOWN")).upper(),
+        "boot_file": data.get("boot_file", data.get("BootFileName", "")),
+        "artifacts": list(data.get("artifacts", []) or []),
+        "media_protection": str(data.get("media_protection", "UNKNOWN")).upper(),
+        "secret_exposure": str(data.get("secret_exposure", "UNKNOWN")).upper(),
+        "secret_inspection": data.get("secret_inspection", "NOT ATTEMPTED"),
+        "sources": list(data.get("sources", []) or []),
+        "evidence": list(data.get("evidence", []) or []),
+    }
+
+
+def sccm_technique_coverage():
+    """Engineering matrix; model presence is not treated as implementation."""
+    return {
+        "RECON-1": "PARTIAL", "RECON-2": "PARTIAL", "RECON-3": "PARTIAL",
+        "RECON-4": "PARTIAL", "RECON-5": "PARTIAL", "RECON-6": "PARTIAL",
+        "RECON-7": "PARTIAL", "CRED-1": "PARTIAL",
+    }
+
+
 def bounded_artifact_candidates(items, limits=None):
     limits = limits or SCCMArtifactLimits()
     selected, total = [], 0

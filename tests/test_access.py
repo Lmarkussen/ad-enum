@@ -1,4 +1,4 @@
-from ad_enum.access import from_netexec_hosts, merge_access, normalize_access
+from ad_enum.access import from_netexec_hosts, merge_access, normalize_access, parse_netexec_auth
 
 
 def test_access_separates_authentication_from_privilege():
@@ -22,3 +22,13 @@ def test_access_deduplicates_and_prefers_success():
 
 def test_access_rejects_unknown_privilege_labels():
     assert normalize_access({"authentication": "success", "privilege": "root"})["privilege"] == "UNKNOWN"
+
+
+def test_netexec_auth_parser_requires_explicit_marker():
+    result = parse_netexec_auth("SMB 10.0.0.1 445 TCP OPEN", protocol="SMB",
+                                host="dc.example", principal="user")
+    assert result["authentication"] == "UNKNOWN"
+    result = parse_netexec_auth("SMB 10.0.0.1 445 [+] DOMAIN\\user (Pwn3d!)",
+                                protocol="SMB", host="dc.example", principal="user")
+    assert result["authentication"] == "AUTHENTICATED"
+    assert result["privilege"] == "ADMIN"

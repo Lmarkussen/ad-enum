@@ -5,7 +5,8 @@ from ad_enum.reporting.html import render_html, write_html_report
 from ad_enum.sccm_models import (SCCMArtifactLimits, bounded_artifact_candidates,
                                   normalize_mp_metadata, normalize_pxe_evidence,
                                   normalize_dp_content, normalize_task_sequences,
-                                  normalize_sccm_topology, normalize_sccm_capabilities)
+                                  normalize_sccm_topology, normalize_sccm_capabilities,
+                                  normalize_cred1_evidence, sccm_technique_coverage)
 
 
 def _model():
@@ -68,6 +69,20 @@ def test_html_shows_authenticated_access():
     report = render_html(model)
     assert "Authenticated Access" in report
     assert "AUTHENTICATED" in report
+
+
+def test_installer_uses_explicit_netexec_package_path():
+    installer = open("install.sh", encoding="utf-8").read()
+    assert "pipx install --force netexec" in installer
+
+
+def test_cred1_model_is_safe_and_never_implies_decryption():
+    result = normalize_cred1_evidence({"dp": "MECM", "BootFileName": "pxeboot.n12",
+                                       "media_protection": "protected", "artifacts": [".boot.bcd"]})
+    assert result["boot_file"] == "pxeboot.n12"
+    assert result["media_protection"] == "PROTECTED"
+    assert result["secret_inspection"] == "NOT ATTEMPTED"
+    assert sccm_technique_coverage()["CRED-1"] == "PARTIAL"
 
 
 def test_sccm_artifact_policy_is_bounded():
