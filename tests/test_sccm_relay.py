@@ -1,7 +1,7 @@
 import json
 from types import SimpleNamespace
 from ad_enum.core.planner import find_executable
-from ad_enum.sccm import discover
+from ad_enum.sccm import discover, normalize_relayking
 from ad_enum.inventory import DomainInventory
 
 
@@ -27,3 +27,12 @@ def test_sccm_sql_role_is_spn_evidence():
     inv.add("computers", "S-2", {"name": "MSSQL", "servicePrincipalName": ["MSSQLSvc/sql.sccm.lab:1433"]}, "native-ldap")
     result = discover(inv)
     assert result["sql_servers"][0]["name"] == "MSSQL"
+
+
+def test_relayking_paths_are_normalized_without_action_fields():
+    result = normalize_relayking({"statistics": {"relayable_hosts": 1}, "relay_paths": [
+        {"source_host": "MECM", "dest_host": "DC", "dest_protocol": "ldap",
+         "impact": "HIGH", "description": "observed", "coerce": True} ]})
+    assert result["statistics"]["relayable_hosts"] == 1
+    assert result["paths"][0]["dest_protocol"] == "ldap"
+    assert "coerce" not in result["paths"][0]

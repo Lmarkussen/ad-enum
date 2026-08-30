@@ -13,7 +13,7 @@ from .core.planner import ExecutionPlanner
 from .core.findings import NormalizedFinding
 from .external import execute_external
 from .inventory import native_inventory, DomainInventory, build_targets, sensitive_description, parse_netexec_smb
-from .sccm import discover as discover_sccm
+from .sccm import discover as discover_sccm, normalize_relayking
 from .kerberos import roastable
 from .delegation import enumerate_delegation, enumerate_gmsa
 from .core.console import Console
@@ -177,12 +177,13 @@ def main():
     workspace.write_json(workspace.findings_path("SCCM", "inventory.json"), sccm_result)
     workspace.write_json(workspace.findings_path("SCCM", "topology.json"), sccm_result)
     coverage.add("SCCM / infrastructure discovery", "PASS", f"{len(sccm_result['hosts'])} candidate host(s)")
+    relay_findings = []
     relay_result = external_results.get("relay", {})
     if relay_result.get("status") == "PASS":
         relay_data = relay_result.get("result", {}).get("json")
+        relay_inventory = normalize_relayking(relay_data)
         workspace.write_json(workspace.findings_path("Relay", "inventory.json"),
-                             {"source": "relayking", "data": relay_data or {},
-                              "safe_mode": True})
+                             {"source": "relayking", **relay_inventory, "safe_mode": True})
         relay_targets = []
         for host in inventory.records.get("observed_hosts", {}).values():
             if host.attributes.get("smb_signing") is False:
@@ -190,6 +191,16 @@ def main():
         workspace.write_text(workspace.findings_path("Relay", "relay-targets.txt"),
                              "\n".join(relay_targets) + ("\n" if relay_targets else ""))
         coverage.add("Relay / safe exposure enumeration", "PASS", "RelayKing audit, no coercion")
+        for path in relay_inventory["paths"]:
+            if path.get("dest_protocol") in {"ldap", "http", "https", "mssql", "smb"}:
+                relay_findings.append(NormalizedFinding(
+                    finding_id=f"relay:path:{path.get('dest_host')}:{path.get('dest_protocol')}",
+                    category="RELAY", rule="relay-path",
+                    title=f"Potential NTLM relay path — {path.get('dest_host')} ({path.get('dest_protocol')})",
+                    affected_object=path.get("dest_host", "unknown"), domain=workspace.domain,
+                    sources=[{"source": "relayking", "vulnerable": True}], evidence=path,
+                    status="single-source", priority="medium", workspace_artifacts=["Relay/inventory.json"],
+                    first_seen_scan=workspace.scan_id, current_scan=workspace.scan_id).as_dict())
     else:
         coverage.add("Relay / safe exposure enumeration", "NOT AVAILABLE" if relay_result.get("status") == "UNAVAILABLE" else "FAILED",
                      relay_result.get("reason", "RelayKing not executed"))
@@ -323,7 +334,6 @@ def main():
             evidence=item.as_dict(), status="single-source", priority="medium",
             workspace_artifacts=["Delegation/inventory.json"], first_seen_scan=workspace.scan_id,
             current_scan=workspace.scan_id).as_dict())
-    relay_findings = []
     for host in inventory.records.get("observed_hosts", {}).values():
         if host.attributes.get("smb_signing") is False:
             relay_findings.append(NormalizedFinding(

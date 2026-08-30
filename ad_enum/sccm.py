@@ -34,3 +34,21 @@ def discover(inventory):
             "site_servers": [], "sms_providers": [], "sql_servers": [x for x in hosts if x["role"] == "sql-candidate"],
             "pxe": {"status": "UNKNOWN", "evidence": []},
             "sup_wsus": [], "status": "candidate-discovery-only"}
+
+
+def normalize_relayking(data):
+    """Keep RelayKing's structured exposure/path results without executing them."""
+    if not isinstance(data, dict):
+        return {"status": "UNAVAILABLE", "targets": [], "paths": [], "statistics": {}}
+    paths = data.get("relay_paths", [])
+    normalized = []
+    for path in paths if isinstance(paths, list) else []:
+        if not isinstance(path, dict):
+            continue
+        normalized.append({key: path.get(key) for key in
+                           ("source_host", "source_ip", "source_protocol", "dest_host",
+                            "dest_ip", "dest_protocol", "impact", "description",
+                            "ntlmv1_required")})
+    return {"status": "PASS", "targets": data.get("targets", []),
+            "paths": normalized, "statistics": data.get("statistics", {}),
+            "high_value_targets": data.get("high_value_targets", [])}
