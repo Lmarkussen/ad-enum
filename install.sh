@@ -125,16 +125,28 @@ if [[ "$mode" != minimal ]]; then
     say "Installing CinderPath CRED-1 adapter"
     cinderpath_bin="$repo_dir/.venv/bin/cinderpath"
     cinderpath_source="$repo_dir/.cache/CinderPath"
-    if [[ ! -x "$cinderpath_bin" ]]; then
-      if [[ ! -d "$cinderpath_source/.git" ]]; then
-        mkdir -p "$(dirname "$cinderpath_source")"
-        run_logged "Cloning CinderPath source" timeout 120s git clone --depth 1 https://github.com/Lmarkussen/CinderPath.git "$cinderpath_source"
-      fi
-      run_logged "Building CinderPath" timeout 900s go -C "$cinderpath_source" build -o "$cinderpath_bin" ./cmd/cinderpath
+    cinderpath_url="https://github.com/Lmarkussen/CinderPath.git"
+    cinderpath_checkout_ok=0
+    if [[ -d "$cinderpath_source/.git" ]] && git -C "$cinderpath_source" rev-parse --is-inside-work-tree >/dev/null 2>&1 && git -C "$cinderpath_source" remote get-url origin >/dev/null 2>&1; then
+      cinderpath_checkout_ok=1
+    elif [[ -e "$cinderpath_source" ]]; then
+      warn "Removing incomplete installer-managed CinderPath checkout"
+      rm -rf -- "$cinderpath_source"
     fi
+    mkdir -p "$(dirname "$cinderpath_source")"
+    if (( cinderpath_checkout_ok )); then
+      run_logged "Updating CinderPath source" timeout 120s git -C "$cinderpath_source" remote set-url origin "$cinderpath_url"
+      run_logged "Fetching current CinderPath source" timeout 120s git -C "$cinderpath_source" fetch --depth 1 origin
+      run_logged "Selecting current CinderPath source" git -C "$cinderpath_source" reset --hard FETCH_HEAD
+    else
+      run_logged "Cloning CinderPath from public GitHub" timeout 120s git clone --depth 1 "$cinderpath_url" "$cinderpath_source"
+    fi
+    ok "CinderPath source available"
+    run_logged "Building CinderPath" timeout 900s go -C "$cinderpath_source" build -o "$cinderpath_bin" ./cmd/cinderpath
+    ok "CinderPath built"
     CURRENT_STAGE="Checking CinderPath CRED-1 support"
     if "$cinderpath_bin" assess CRED-1 --help >/dev/null 2>&1; then
-      ok "CinderPath CRED-1 adapter available"
+      ok "CRED-1 structured output supported"
     else
       warn "CinderPath is present but CRED-1 structured output is unavailable"
     fi
