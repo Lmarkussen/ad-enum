@@ -702,6 +702,13 @@ def main():
         cred1_status = "PASS" if any(x.get("pxe") == "CONFIRMED" for x in cred1_results) else "PARTIAL"
         coverage.add("SCCM / CRED-1 safe PXE acquisition", cred1_status,
                      f"{len(cred1_results)} discovered DP candidate(s) checked")
+        full_cred1 = any(str(x.get("status", "")).upper() in {"CONFIRMED", "COMPLETE"}
+                         and str(x.get("secret_inspection", "")).upper() == "COMPLETE"
+                         for x in cred1_results)
+        coverage.add("SCCM / CRED-1 deterministic recovery",
+                     "CONFIRMED" if any(x.get("credentials") for x in cred1_results) else
+                     ("COMPLETE" if full_cred1 else "PARTIAL"),
+                     "CinderPath adapter completed bounded read/decode path")
         console.complete("SCCM CRED-1 PXE analysis complete")
     else:
         coverage.add("SCCM / CRED-1 safe PXE acquisition", "NOT TESTED",
@@ -715,6 +722,13 @@ def main():
     for capability in ("distribution point", "PXE / WDS", "boot metadata", "task-sequence metadata",
                        "SQL association", "SUP / WSUS", "SCCM ACL", "DP content metadata"):
         coverage.add(f"SCCM / {capability}", "NOT TESTED", "requires live role evidence")
+    if cred1_targets:
+        cred1_complete = any(str(x.get("status", "")).upper() in {"CONFIRMED", "COMPLETE"}
+                             and str(x.get("secret_inspection", "")).upper() == "COMPLETE"
+                             for x in cred1_results)
+        if cred1_complete:
+            for capability in ("distribution point", "PXE / WDS", "boot metadata", "task-sequence metadata"):
+                coverage.add(f"SCCM / {capability}", "COMPLETE", "validated by CinderPath CRED-1 adapter")
     console.complete("SCCM analysis complete")
     console.activity("Enumerating MSSQL infrastructure...")
     mssql_inventory = normalize_mssql(inventory)
