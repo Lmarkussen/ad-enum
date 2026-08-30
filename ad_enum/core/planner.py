@@ -15,6 +15,9 @@ def find_executable(name):
     if name == "relayking.py":
         candidate = Path.home() / "RelayKing-Depth" / name
         if candidate.is_file(): return str(candidate)
+    if name == "NetworkHound.py":
+        candidate = Path.home() / "NetworkHound" / name
+        if candidate.is_file(): return str(candidate)
     return None
 
 class PlanStatus(str, Enum):
@@ -56,6 +59,8 @@ class ModuleRegistry:
         r.register(ModuleSpec("kerberos", "Kerberos account exposure", "kerberos", dependencies=("ldap",), outputs=("Kerberos",)))
         r.register(ModuleSpec("delegation", "Delegation enumeration", "delegation", dependencies=("ldap",), outputs=("Delegation",)))
         r.register(ModuleSpec("relay", "Relay enumeration", "relay", required_tools=("relayking.py",), outputs=("Relay",)))
+        r.register(ModuleSpec("networkhound", "NetworkHound topology", "network", required_tools=("NetworkHound.py",), outputs=("NetworkHound",)))
+        r.register(ModuleSpec("gpo", "GPO and SYSVOL", "gpo", dependencies=("ldap",), outputs=("GPO",)))
         return r
 
 class ExecutionPlanner:

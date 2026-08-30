@@ -47,6 +47,8 @@ def report():
     if any(statuses[x] == "MISSING" for x in ("Certipy", "BloodHound", "LDAPDomainDump", "NetExec", "Impacket")):
         print("\nWARNING: default installation is incomplete")
     print("\nModule Capability")
+    nh_status, nh_version = _tool("NetworkHound.py", version_args=("--help",))
+    print(f"  NetworkHound ........ {nh_status}{(' (' + nh_version + ')' if nh_version else '')}")
     print("  ADCS native .......... AVAILABLE")
     print(f"  ADCS Certipy ......... {'AVAILABLE' if statuses['Certipy'] == 'AVAILABLE' else 'UNAVAILABLE'}")
     print(f"  BloodHound ........... {'AVAILABLE' if statuses['BloodHound'] == 'AVAILABLE' else 'UNAVAILABLE'}")

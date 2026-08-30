@@ -14,6 +14,8 @@ from .core.findings import NormalizedFinding
 from .external import execute_external
 from .inventory import native_inventory, DomainInventory, build_targets, sensitive_description, parse_netexec_smb
 from .sccm import discover as discover_sccm, normalize_relayking, probe_management_points
+from .network import build_dns_map
+from .gpo import normalize_gpos, collect_sysvol, inspect_file
 from .kerberos import roastable
 from .delegation import enumerate_delegation, enumerate_gmsa
 from .core.console import Console
@@ -100,7 +102,7 @@ def main():
     workspace = ScanWorkspace(a.output_dir, root, original_target=target)
     requested = []
     for module in (x.strip().lower() for x in a.modules.split(",") if x.strip()):
-        if module == "all": requested.extend(("bloodhound", "adcs-certipy", "ldapdomaindump", "netexec", "ldap", "adcs-native", "kerberos", "delegation", "sccm-discovery", "relay"))
+        if module == "all": requested.extend(("bloodhound", "adcs-certipy", "ldapdomaindump", "netexec", "ldap", "adcs-native", "kerberos", "delegation", "sccm-discovery", "relay", "networkhound", "gpo"))
         elif module == "adcs": requested.extend(("ldap", "adcs-native", "adcs-certipy"))
         else: requested.append(module)
     plan = ExecutionPlanner().plan(requested or ["adcs-native"])
@@ -131,6 +133,12 @@ def main():
         obj = result.get("result", {}) if isinstance(result, dict) else {}
         if hasattr(obj.get("inventory") if isinstance(obj, dict) else None, "records"):
             inventory.merge(obj["inventory"])
+    networkhound_result = external_results.get("networkhound", {}).get("result", {})
+    dns_map = build_dns_map(inventory, networkhound_result.get("inventory") if isinstance(networkhound_result, dict) else None)
+    workspace.write_json(workspace.root / "dns-map.json", dns_map)
+    workspace.write_json(workspace.findings_path("NetworkHound", "inventory.json"),
+                         networkhound_result.get("inventory", {}) if isinstance(networkhound_result, dict) else {})
+    workspace.write_json(workspace.findings_path("NetworkHound", "dns-map.json"), dns_map)
     findings, comparisons, coverage, dangling, duplicates = scan(cas, templates, certipy=certipy)
     exposures = roastable(inventory)
     delegation_records = enumerate_delegation(inventory)
@@ -190,6 +198,20 @@ def main():
     workspace.write_json(workspace.findings_path("SCCM", "endpoints.json"), sccm_result.get("endpoint_probes", []))
     workspace.write_json(workspace.findings_path("SCCM", "pxe.json"), sccm_result.get("pxe", {}))
     coverage.add("SCCM / infrastructure discovery", "PASS", f"{len(sccm_result['hosts'])} candidate host(s)")
+    gpos = normalize_gpos(collector.raw.get("gpos", []))
+    sysvol = collect_sysvol(context, gpos)
+    gpo_findings = []
+    gpo_by_guid = {str(g.get("guid", "")).strip("{}").lower(): g for g in gpos}
+    for item in sysvol.get("files", []):
+        gpo = gpo_by_guid.get(str(item.get("gpo_guid", "")).strip("{}").lower(), {"guid": item.get("gpo_guid")})
+        gpo_findings.extend(inspect_file(gpo, item["path"], item["content"]))
+        safe = dict(item); safe.pop("content", None)
+        workspace.write_json(workspace.raw_dir("GPO") / (str(item["gpo_guid"]).strip("{}").lower() + ".json"), safe)
+    workspace.write_json(workspace.findings_path("GPO", "inventory.json"), gpos)
+    workspace.write_json(workspace.findings_path("GPO", "policies.json"), {"status": sysvol.get("status"), "files": [{k: v for k, v in x.items() if k != "content"} for x in sysvol.get("files", [])]})
+    workspace.write_json(workspace.findings_path("GPO", "findings.json"), gpo_findings)
+    coverage.add("GPO / LDAP inventory", "PASS", f"{len(gpos)} group policy object(s)")
+    coverage.add("GPO / SYSVOL targeted inspection", sysvol.get("status", "FAILED"), f"{len(sysvol.get('files', []))} file(s)")
     relay_findings = []
     relay_result = external_results.get("relay", {})
     if relay_result.get("status") == "PASS":
@@ -362,7 +384,16 @@ def main():
     workspace.write_json(workspace.findings_path("LDAP", "findings.json"), policy_findings + description_findings)
     workspace.write_json(workspace.findings_path("Kerberos", "findings.json"), kerberos_findings)
     workspace.write_json(workspace.findings_path("Delegation", "findings.json"), delegation_findings)
-    all_findings = finding_records + policy_findings + description_findings + kerberos_findings + delegation_findings + relay_findings
+    for item in gpo_findings:
+        gpo_finding = NormalizedFinding(
+            finding_id=f"gpo:{item['rule']}:{item['gpo'].get('guid')}:{item['file']}",
+            category="GPO", rule=item["rule"], title=item["title"],
+            affected_object=item["gpo"].get("guid", item["file"]), domain=workspace.domain,
+            sources=[{"source": "sysvol", "observed": True}], evidence=item["evidence"],
+            status="single-source", priority="high", workspace_artifacts=["GPO/findings.json"],
+            first_seen_scan=workspace.scan_id, current_scan=workspace.scan_id)
+        item["normalized"] = gpo_finding.as_dict()
+    all_findings = finding_records + policy_findings + description_findings + kerberos_findings + delegation_findings + relay_findings + [x["normalized"] for x in gpo_findings]
     workspace.write_json(workspace.findings_path("vulnerabilities", "findings.json"), all_findings)
     workspace.write_text(workspace.findings_path("vulnerabilities", "findings.txt"),
                           "\n".join(f"[{x['category']}] {x['title']}" for x in all_findings) + "\n")

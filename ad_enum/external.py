@@ -3,6 +3,7 @@ from .adapters.bloodhound import BloodHoundAdapter
 from .adapters.certipy import CertipyAdapter
 from .adapters.ldapdomaindump import LDAPDomainDumpAdapter
 from .adapters.netexec import NetExecAdapter
+from .adapters.networkhound import NetworkHoundAdapter
 from .adapters.relayking import RelayKingAdapter
 from .inventory import native_inventory
 
@@ -12,6 +13,7 @@ ADAPTERS = {
     "ldapdomaindump": LDAPDomainDumpAdapter,
     "netexec": NetExecAdapter,
     "relay": RelayKingAdapter,
+    "networkhound": NetworkHoundAdapter,
 }
 
 def execute_external(context, plan, *, certipy_snapshot=None):

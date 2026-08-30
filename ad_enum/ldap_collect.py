@@ -117,6 +117,18 @@ class Collector:
             raw_sccm.extend(dict(e.entry_attributes_as_dict, distinguishedName=e.entry_dn) for e in conn.entries)
         except Exception:
             pass
+        # Group Policy objects live in the Configuration NC; collect metadata
+        # only. SYSVOL file inspection is performed separately by the GPO
+        # module so LDAP collection remains transport-focused.
+        raw_gpos = []
+        try:
+            policies_dn = f"CN=Policies,CN=System,{config}"
+            conn.search(policies_dn, "(objectClass=groupPolicyContainer)", attributes=[
+                "displayName", "name", "objectGUID", "gPCFileSysPath", "versionNumber",
+                "flags", "whenCreated", "whenChanged", "gPCWQLFilter"])
+            raw_gpos = [dict(e.entry_attributes_as_dict, distinguishedName=e.entry_dn) for e in conn.entries]
+        except Exception:
+            raw_gpos = []
         conn.search(f"CN=Certificate Templates,{base}", "(objectClass=pKICertificateTemplate)", search_scope="LEVEL",
                     attributes=["cn", "displayName", "objectGUID", "objectSid", "msPKI-Certificate-Name-Flag", "msPKI-Enrollment-Flag",
                                 "pKIExtendedKeyUsage", "msPKI-Certificate-Application-Policy", "msPKI-RA-Signature", "nTSecurityDescriptor"],
@@ -133,5 +145,5 @@ class Collector:
         self.raw = {"defaultNamingContext": root, "configurationNamingContext": config,
                     "passwordPolicy": {k: domain_policy[k][0] for k in policy_attrs if k in domain_policy and domain_policy[k]},
                     "cas": raw_cas, "templates": raw_templates, "identities": raw_identities,
-                    "sccm": list(deduped_sccm.values())}
+                    "sccm": list(deduped_sccm.values()), "gpos": raw_gpos}
         return normalize_directory(self.raw)
