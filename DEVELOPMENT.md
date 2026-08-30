@@ -162,3 +162,17 @@ NetExec ticket/hash-output modes were not used.  Forced-Kerberos validation
 passed native LDAP and BloodHound; Certipy could not emit JSON without a
 usable cache, NetExec failed in cache-only mode, and LDAPDomainDump is
 explicitly unsupported under the forced-Kerberos policy.
+
+## Installer and fixture-validation pass (2026-08-30)
+
+The default installer now installs Impacket alongside Certipy, BloodHound,
+LDAPDomainDump, and NetExec. Setuptools package discovery is explicitly
+limited to `ad_enum*`; a fresh Kali checkout completed `./install.sh`, and
+the core editable installation completed in a clean virtual environment.
+
+The dedicated `snablr-lab-admin` password was rotated through the previously
+authorized reset path and held only ephemerally. No password value is
+recorded. Attempts to create the five named fixture users through that
+bootstrap account returned `NT_STATUS_ACCESS_DENIED`, so no AS-REP,
+PASSWD_NOTREQD, Kerberos, or delegation fixture was created and no unrelated
+account was modified.
