@@ -55,3 +55,10 @@ def test_invalid_credentials_do_not_create_workspace(tmp_path, monkeypatch, caps
     assert cli.main() == 2
     assert "Credentials Invalid" in capsys.readouterr().out
     assert not (tmp_path / "example.test").exists()
+
+def test_auto_config_restore_only_removes_managed_block(tmp_path):
+    from ad_enum.core.autoconfig import restore_hosts, HOSTS_BEGIN, HOSTS_END
+    path = tmp_path / "hosts"
+    path.write_text(f"keep\n{HOSTS_BEGIN}\nmanaged\n{HOSTS_END}\n")
+    assert restore_hosts(path)["status"] == "RESTORED"
+    assert path.read_text() == "keep\n"

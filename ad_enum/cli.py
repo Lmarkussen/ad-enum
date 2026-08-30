@@ -17,6 +17,11 @@ from .sccm import discover as discover_sccm
 
 def main():
     argv = sys.argv[1:]
+    if argv and argv[0] == "auto-config" and "--restore" in argv[1:]:
+        from .core.autoconfig import restore_hosts
+        result = restore_hosts()
+        print(f"Auto-config restore: {result['status']}")
+        return 0
     if argv and argv[0] == "doctor":
         from .doctor import report
         return report()

@@ -3,6 +3,22 @@ import socket
 import re
 import shutil
 import subprocess
+from pathlib import Path
+
+HOSTS_BEGIN = "# AD-Enum managed hosts begin"
+HOSTS_END = "# AD-Enum managed hosts end"
+
+def restore_hosts(path="/etc/hosts"):
+    """Remove only an AD-Enum-managed block; never restore unrelated lines."""
+    target = Path(path)
+    if not target.exists(): return {"status": "NOT FOUND", "path": str(target)}
+    text = target.read_text()
+    if HOSTS_BEGIN not in text or HOSTS_END not in text:
+        return {"status": "NO AD-ENUM CHANGES", "path": str(target)}
+    before, remainder = text.split(HOSTS_BEGIN, 1)
+    _, after = remainder.split(HOSTS_END, 1)
+    target.write_text(before.rstrip() + "\n" + after.lstrip())
+    return {"status": "RESTORED", "path": str(target)}
 
 def inspect(dc_ip, domain):
     result = {"requested": True, "dc_ip": dc_ip, "dns": "FAILED", "dc_hostname": "", "time": "NOT CHECKED"}
