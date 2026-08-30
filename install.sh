@@ -54,6 +54,10 @@ package_manager_available() {
     fi
   done
 }
+libpcap_dev_installed() {
+  command -v dpkg-query >/dev/null 2>&1 || return 1
+  dpkg-query -W -f='${Status}\n' libpcap-dev 2>/dev/null | grep -q '^install ok installed$'
+}
 
 say "Checking system requirements"
 apt_packages=()
@@ -68,7 +72,7 @@ if [[ "$mode" != minimal ]] && ! command -v pipx >/dev/null 2>&1; then apt_packa
 if [[ "$mode" != minimal ]] && ! command -v nxc >/dev/null 2>&1; then apt_packages+=(netexec); fi
 if [[ "$mode" != minimal ]] && ! command -v kinit >/dev/null 2>&1; then apt_packages+=(krb5-user); fi
 if [[ "$mode" != minimal ]] && ! command -v go >/dev/null 2>&1; then apt_packages+=(golang-go); fi
-if [[ "$mode" != minimal ]] && { [[ ! -f /usr/include/pcap/pcap.h ]] && [[ ! -f /usr/include/pcap.h ]]; }; then apt_packages+=(libpcap-dev); fi
+if [[ "$mode" != minimal ]] && ! libpcap_dev_installed; then apt_packages+=(libpcap-dev); fi
 if ((${#apt_packages[@]})); then
   command -v sudo >/dev/null 2>&1 || { fail "Missing system packages: ${apt_packages[*]} (sudo unavailable)"; exit 1; }
   CURRENT_STAGE="Checking sudo access"
