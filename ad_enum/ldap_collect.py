@@ -160,6 +160,7 @@ class Collector:
         # high-value objects.  This supports ACL analysis without turning a
         # normal scan into an all-domain ACE dump.
         raw_security_descriptors = []
+        descriptor_errors = []
         try:
             targets = [(root, "domain")]
             privileged = {"domain admins", "enterprise admins", "administrators", "schema admins",
@@ -219,22 +220,24 @@ class Collector:
                         raw_security_descriptors.extend(dict(e.entry_attributes_as_dict,
                                                              distinguishedName=e.entry_dn,
                                                              targetKind=target_kind) for e in conn.entries)
-                except Exception:
+                except Exception as exc:
+                    descriptor_errors.append({"target": target_dn, "stage": "controlled", "error": str(exc)})
                     try:
                         if conn.search(target_dn, "(objectClass=*)", search_scope="BASE",
                                        attributes=descriptor_attrs):
                             raw_security_descriptors.extend(dict(e.entry_attributes_as_dict,
                                                                  distinguishedName=e.entry_dn,
                                                                  targetKind=target_kind) for e in conn.entries)
-                    except Exception:
+                    except Exception as exc:
+                        descriptor_errors.append({"target": target_dn, "stage": "fallback", "error": str(exc)})
                         # A protected target must not suppress descriptor
                         # results for the other narrowly selected objects.
                         continue
-        except Exception:
+        except Exception as exc:
             # Preserve descriptors collected before a server-side or
             # per-target exception.  ACL coverage is intentionally narrow;
             # one protected target must not erase successful results.
-            pass
+            descriptor_errors.append({"stage": "collection", "error": str(exc)})
         raw_trusts, raw_laps_schema = [], []
         try:
             conn.search(f"CN=System,{root}", "(objectClass=trustedDomain)",
@@ -263,6 +266,7 @@ class Collector:
                     "cas": raw_cas, "templates": raw_templates, "identities": raw_identities,
                     "sccm": list(deduped_sccm.values()), "gpos": raw_gpos,
                     "gpo_links": raw_gpo_links, "security_descriptors": raw_security_descriptors,
+                    "security_descriptor_errors": descriptor_errors,
                     "sites": raw_sites, "subnets": raw_subnets,
                     "trusts": raw_trusts, "laps_schema": raw_laps_schema}
         return normalize_directory(self.raw)
