@@ -1,5 +1,6 @@
 """Read-only SCCM/MECM infrastructure inventory and correlation."""
 import re
+import ipaddress
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -218,6 +219,16 @@ def cred1_candidates(result):
         if not isinstance(item, dict):
             continue
         host = item.get("fqdn") or item.get("host") or item.get("name")
+        addresses = item.get("ip_addresses") or item.get("ips") or []
+        if isinstance(addresses, str):
+            addresses = [addresses]
+        for address in addresses:
+            try:
+                if ipaddress.ip_address(str(address)).version == 4:
+                    host = str(address)
+                    break
+            except ValueError:
+                continue
         if host and host not in out:
             out.append(host)
     return out
