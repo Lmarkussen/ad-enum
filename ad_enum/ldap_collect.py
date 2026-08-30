@@ -122,7 +122,7 @@ class Collector:
         # module so LDAP collection remains transport-focused.
         raw_gpos = []
         try:
-            policies_dn = f"CN=Policies,CN=System,{config}"
+            policies_dn = f"CN=Policies,CN=System,{root}"
             conn.search(policies_dn, "(objectClass=groupPolicyContainer)", attributes=[
                 "displayName", "name", "objectGUID", "gPCFileSysPath", "versionNumber",
                 "flags", "whenCreated", "whenChanged", "gPCWQLFilter"])
