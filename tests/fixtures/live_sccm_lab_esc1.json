@@ -1,0 +1,51 @@
+{
+  "domain": "SCCM.LAB",
+  "template": {
+    "distinguishedName": "CN=Snablr-ESC1-Lab,CN=Certificate Templates,CN=Public Key Services,CN=Services,CN=Configuration,DC=sccm,DC=lab",
+    "cn": "Snablr-ESC1-Lab",
+    "displayName": "Snablr-ESC1-Lab",
+    "objectGUID": "33ebfc2e-de0b-47d2-aba5-dca00ce38ce4",
+    "msPKI-Certificate-Name-Flag": 1,
+    "msPKI-Enrollment-Flag": 0,
+    "msPKI-RA-Signature": 0,
+    "pKIExtendedKeyUsage": ["1.3.6.1.5.5.7.3.2"],
+    "msPKI-Certificate-Application-Policy": [],
+    "nTSecurityDescriptorBase64": "AQAEjAAAAAAAAAAAAAAAABQAAAAEANQABgAAAAUAOAAAAQAAAQAAAGjJEA77eNIRkNQAwE953FUBBQAAAAAABRUAAAA4Mb730ZU66AUtNJNqBAAAAAAkAP8BDwABBQAAAAAABRUAAAA4Mb730ZU66AUtNJMAAgAAAAAUAJQAAgABAQAAAAAABQsAAAAAABQA/wEPAAEBAAAAAAAFEgAAAAASJAD/AQ8AAQUAAAAAAAUVAAAAODG+99GVOugFLTSTBwIAAAASJAC9AQ8AAQUAAAAAAAUVAAAAODG+99GVOugFLTSTAAIAAA=="
+  },
+  "ca": {
+    "distinguishedName": "CN=SCCM-LAB-CA,CN=Enrollment Services,CN=Public Key Services,CN=Services,CN=Configuration,DC=sccm,DC=lab",
+    "name": "SCCM-LAB-CA",
+    "dnsHostName": "DC.sccm.lab",
+    "certificateTemplates": [
+      "Snablr-ESC1-Lab",
+      "DirectoryEmailReplication",
+      "DomainControllerAuthentication",
+      "KerberosAuthentication",
+      "EFSRecovery",
+      "EFS",
+      "DomainController",
+      "WebServer",
+      "Machine",
+      "User",
+      "SubCA",
+      "Administrator"
+    ]
+  },
+  "enrollmentGroup": {
+    "distinguishedName": "CN=Snablr-Lab-Users,CN=Users,DC=sccm,DC=lab",
+    "sid": "S-1-5-21-4156436792-3896153553-2469670149-1130",
+    "members": ["CN=carol,CN=Users,DC=sccm,DC=lab"]
+  },
+  "certipy": {
+    "version": "5.1.0",
+    "templateName": "Snablr-ESC1-Lab",
+    "enabled": true,
+    "enrolleeSuppliesSubject": true,
+    "clientAuthentication": true,
+    "requiresManagerApproval": false,
+    "authorizedSignaturesRequired": 0,
+    "certificateAuthorities": ["SCCM-LAB-CA"],
+    "enrollmentRights": ["SCCM.LAB\\Snablr-Lab-Users"],
+    "esc1Reported": false
+  }
+}

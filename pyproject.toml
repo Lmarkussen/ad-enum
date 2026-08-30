@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "AD-Enum"
+version = "0.1.0"
+description = "Protocol-native Active Directory Certificate Services enumeration"
+requires-python = ">=3.11"
+dependencies = ["ldap3>=2.9", "pycryptodome>=3.20", "dnspython>=2.6"]
+
+[project.scripts]
+ad-enum = "ad_enum.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
