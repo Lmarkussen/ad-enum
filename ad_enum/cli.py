@@ -700,7 +700,9 @@ def main():
                     console.line(f"    Impact ........... {evidence.get('impact', 'May impersonate users to Kerberos services on the target')}")
                 elif item.get("rule", "").startswith("gpo-"):
                     if evidence.get("file"): console.line(f"    File ............. {evidence['file']}")
+                    if evidence.get("account"): console.line(f"    Account .......... {evidence['account']}")
                     if evidence.get("type"): console.line(f"    Type ............. {evidence['type']}")
+                    if evidence.get("value"): console.line(f"    {'cpassword' if item.get('rule') == 'gpp-cpassword' else 'Value'} ............ {evidence['value']}")
                 elif item.get("status") not in {"single-source", "corroborated"}:
                     console.line(f"    Status ........... {item.get('status', '').upper()}")
     console.line()

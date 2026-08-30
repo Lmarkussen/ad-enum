@@ -71,7 +71,7 @@ def _extract_credentials(text):
     for pattern, kind in patterns:
         match = re.search(pattern, text or "")
         if match:
-            return {"type": kind, "username": match.group(1), "value": match.group(2)}
+            return {"type": kind, "username": match.group(1).strip("\"'"), "value": match.group(2).strip("\"'")}
     return {"type": "credential-pattern", "username": _account(text), "value": None}
 
 
