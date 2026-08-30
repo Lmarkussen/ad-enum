@@ -13,10 +13,12 @@ from .core.context import AuthContext, ScanContext
 from .core.planner import ExecutionPlanner
 from .core.findings import NormalizedFinding
 from .external import execute_external
-from .inventory import native_inventory, DomainInventory, build_targets, sensitive_description, parse_netexec_smb
+from .inventory import (native_inventory, DomainInventory, build_targets, sensitive_description,
+                        parse_netexec_smb, extract_attribute_secret)
 from .sccm import discover as discover_sccm, normalize_relayking, probe_management_points
 from .network import build_dns_map
-from .gpo import normalize_gpos, collect_sysvol, collect_netlogon, inspect_file
+from .dns_enum import normalize_zones, normalize_records, merge_into_dns_map, normalize_password_settings
+from .gpo import normalize_gpos, collect_sysvol, collect_netlogon, inspect_file, parse_security_settings
 from .posture import (normalize_smb, normalize_trusts, normalize_gpo_acls, normalize_laps,
                       attach_gpo_links, normalize_security_descriptors, analyze_effective_acls)
 from .kerberos import roastable, account_exposure, privileged_account_sids, account_security_context
@@ -244,13 +246,28 @@ def main():
         if hasattr(obj.get("inventory") if isinstance(obj, dict) else None, "records"):
             inventory.merge(obj["inventory"])
     networkhound_result = external_results.get("networkhound", {}).get("result", {})
+    console.activity("Enumerating AD DNS...")
     dns_map = build_dns_map(inventory, networkhound_result.get("inventory") if isinstance(networkhound_result, dict) else None)
+    dns_zones = normalize_zones(collector.raw.get("dns_zones", []))
+    dns_records = normalize_records(collector.raw.get("dns_records", []))
+    dns_map = merge_into_dns_map(dns_map, dns_records)
     workspace.write_json(workspace.root / "dns-map.json", dns_map)
+    workspace.write_json(workspace.findings_path("DNS", "zones.json"), dns_zones)
+    workspace.write_json(workspace.findings_path("DNS", "records.json"), dns_records)
+    workspace.write_json(workspace.findings_path("DNS", "findings.json"), [])
+    workspace.write_text(workspace.module_dir("DNS") / "findings.txt", "")
+    console.complete("AD DNS enumeration complete")
     workspace.write_json(workspace.findings_path("LDAP", "networking.json"),
                          {"sites": collector.raw.get("sites", []), "subnets": collector.raw.get("subnets", [])})
     workspace.write_json(workspace.findings_path("NetworkHound", "inventory.json"),
                          networkhound_result.get("inventory", {}) if isinstance(networkhound_result, dict) else {})
     workspace.write_json(workspace.findings_path("NetworkHound", "dns-map.json"), dns_map)
+    workspace.write_json(workspace.findings_path("PasswordPolicies", "inventory.json"),
+                         normalize_password_settings(collector.raw.get("password_settings", [])))
+    workspace.write_json(workspace.findings_path("PasswordPolicies", "findings.json"), [])
+    workspace.write_text(workspace.module_dir("PasswordPolicies") / "findings.txt", "")
+    coverage.add("AD DNS / integrated records", "PASS", f"{len(dns_zones)} zone(s), {len(dns_records)} record(s)")
+    coverage.add("Password policies / FGPP", "PASS", f"{len(collector.raw.get('password_settings', []))} PSO(s)")
     console.activity("Checking LDAP security...")
     smb_inventory, smb_findings = [], []
     trust_inventory = normalize_trusts(collector.raw.get("trusts", []))
@@ -394,7 +411,16 @@ def main():
     # NetExec host observations are added above; normalize SMB only after
     # that merge so the module cannot emit an empty inventory.
     smb_inventory = normalize_smb(inventory)
+    console.activity("Enumerating SMB shares...")
+    share_inventory = []
+    for result in external_results.values():
+        result_obj = result.get("result", {}) if isinstance(result, dict) else {}
+        for share in result_obj.get("shares", []) if isinstance(result_obj, dict) else []:
+            key = (str(share.get("ip")), str(share.get("share", "")).lower())
+            if not any((str(x.get("ip")), str(x.get("share", "")).lower()) == key for x in share_inventory):
+                share_inventory.append({**share, "sources": [share.get("source", "netexec")]})
     workspace.write_json(workspace.findings_path("SMB", "inventory.json"), smb_inventory)
+    workspace.write_json(workspace.findings_path("SMB", "shares.json"), share_inventory)
     unsigned = [x for x in smb_inventory if x.get("smb_signing") is False]
     if unsigned:
         smb_findings.append(NormalizedFinding(
@@ -404,8 +430,20 @@ def main():
             evidence={"hosts": unsigned}, status="single-source", priority="medium",
             workspace_artifacts=["SMB/inventory.json"], first_seen_scan=workspace.scan_id,
             current_scan=workspace.scan_id).as_dict())
+    for share in share_inventory:
+        if share.get("writable"):
+            smb_findings.append(NormalizedFinding(
+                finding_id=f"smb:writable-share:{share.get('ip')}:{share.get('share')}", category="SMB",
+                rule="writable-share", title=f"Low-privilege writable share — {share.get('host') or share.get('ip')}\\{share.get('share')}",
+                affected_object=share.get("unc", share.get("share", "unknown")), domain=workspace.domain,
+                sources=[{"source": source, "observed": True} for source in share.get("sources", [])],
+                evidence={"share": share, "impact": "Low-privileged users can modify share content"},
+                status="single-source", priority="medium", workspace_artifacts=["SMB/shares.json"],
+                first_seen_scan=workspace.scan_id, current_scan=workspace.scan_id).as_dict())
     workspace.write_json(workspace.findings_path("SMB", "findings.json"), smb_findings)
     workspace.write_text(workspace.module_dir("SMB") / "findings.txt", "\n".join(f"[{x['category']}] {x['title']}" for x in smb_findings) + ("\n" if smb_findings else ""))
+    coverage.add("SMB / share inventory", "PASS" if share_inventory else "PARTIAL", f"{len(share_inventory)} share(s)")
+    console.complete("SMB share enumeration complete", "PASS" if share_inventory else "WARNING")
     console.activity("Enumerating SCCM...")
     sccm_result = discover_sccm(inventory, collector.raw, dns_map)
     sccm_result["endpoint_probes"] = probe_management_points(sccm_result.get("management_points", []), a.timeout)
@@ -449,10 +487,15 @@ def main():
     sysvol = collect_sysvol(context, gpos)
     netlogon = collect_netlogon(context)
     gpo_findings = []
+    gpo_security_settings = []
     gpo_by_guid = {str(g.get("guid", "")).strip("{}").lower(): g for g in gpos}
     for item in sysvol.get("files", []):
         gpo = gpo_by_guid.get(str(item.get("gpo_guid", "")).strip("{}").lower(), {"guid": item.get("gpo_guid")})
         gpo_findings.extend(inspect_file(gpo, item["path"], item["content"]))
+        for setting in parse_security_settings(item["path"], item["content"]):
+            gpo_security_settings.append({**setting, "gpo": {"guid": gpo.get("guid"),
+                                                               "display_name": gpo.get("display_name"),
+                                                               "scope": gpo.get("scope", {})}})
         safe = dict(item); safe.pop("content", None)
         workspace.write_json(workspace.raw_dir("GPO") / (str(item["gpo_guid"]).strip("{}").lower() + ".json"), safe)
     workspace.write_json(workspace.findings_path("GPO", "inventory.json"), gpos)
@@ -460,6 +503,7 @@ def main():
     workspace.write_json(workspace.findings_path("GPO", "acl.json"), gpo_acls)
     workspace.write_json(workspace.findings_path("GPO", "effective-rights.json"), gpo_acl_observations)
     workspace.write_json(workspace.findings_path("GPO", "policies.json"), {"status": sysvol.get("status"), "error": sysvol.get("error", ""), "files": [{k: v for k, v in x.items() if k != "content"} for x in sysvol.get("files", [])]})
+    workspace.write_json(workspace.findings_path("GPO", "security-settings.json"), gpo_security_settings)
     workspace.write_json(workspace.findings_path("GPO", "findings.json"), gpo_findings)
     sysvol_dir = workspace.module_dir("GPO") / "SYSVOL"
     workspace.write_json(sysvol_dir / "inventory.json",
@@ -480,6 +524,7 @@ def main():
     coverage.add("GPO / SYSVOL targeted inspection", gpo_status, f"{len(sysvol.get('files', []))} file(s)")
     netlogon_status = {"PASS": "PASS", "FAILED": "FAILED", "UNAVAILABLE": "NOT AVAILABLE"}.get(netlogon.get("status"), "FAILED")
     coverage.add("GPO / NETLOGON targeted inventory", netlogon_status, f"{len(netlogon.get('files', []))} file(s)")
+    coverage.add("GPO / security settings", "PARTIAL", f"{len(gpo_security_settings)} setting observation(s)")
     console.complete("GPO analysis complete", "PASS" if gpo_status == "PASS" else "WARNING")
     laps_inventory = normalize_laps(collector.raw.get("laps_schema", []), inventory)
     workspace.write_json(workspace.findings_path("LAPS", "inventory.json"), laps_inventory)
@@ -497,17 +542,19 @@ def main():
                          {"gpo_acls": gpo_acls, "high_value_acls": high_value_acls})
     discovered_credentials = []
     seen_credentials = set()
-    for item in gpo_findings:
+    for item in gpo_findings + ldap_secret_findings:
         value = item.get("evidence", {}).get("value")
         if not value: continue
-        key = (str(item.get("account", "")).lower(), str(value), item.get("rule"))
+        evidence = item.get("evidence", {})
+        account = item.get("account") or evidence.get("username") or item.get("affected_object", "")
+        key = (str(account).lower(), str(value), item.get("rule"))
         if key in seen_credentials: continue
         seen_credentials.add(key)
-        discovered_credentials.append({"account": item.get("account", "UNKNOWN"),
+        discovered_credentials.append({"account": account or "UNKNOWN",
                                        "value": value,
-                                       "type": item.get("evidence", {}).get("type", item.get("rule")),
-                                       "source": item.get("file"),
-                                       "context": item.get("gpo", {}).get("display_name")})
+                                       "type": evidence.get("type", item.get("rule")),
+                                       "source": item.get("file") or evidence.get("attribute"),
+                                       "context": item.get("gpo", {}).get("display_name") or item.get("title")})
     workspace.write_json(workspace.root / "credentials.json", discovered_credentials)
     workspace.write_text(workspace.root / "credentials.txt", "\n\n".join(
         f"Credential exposure — {x['context']}\n  Account: {x['account']}\n"
@@ -656,17 +703,20 @@ def main():
             status="single-source", priority="medium", workspace_artifacts=["inventory-comparison.json"],
             first_seen_scan=workspace.scan_id, current_scan=workspace.scan_id).as_dict())
     description_findings = []
+    ldap_secret_findings = []
     for record in inventory.records.get("users", {}).values():
-        description = record.attributes.get("description")
-        if sensitive_description(description):
-            description_findings.append(NormalizedFinding(
-                finding_id=f"user-description:{record.identifier}", category="INVENTORY",
-                rule="sensitive-user-description", title="Credential-like user description",
+        for secret in extract_attribute_secret(record.attributes):
+            account = record.attributes.get("sAMAccountName", record.identifier)
+            if isinstance(account, list): account = account[0] if account else record.identifier
+            ldap_secret_findings.append(NormalizedFinding(
+                finding_id=f"ldap-secret:{record.identifier}:{secret['attribute']}:{secret['value']}",
+                category="ACCOUNT", rule="ldap-attribute-secret",
+                title=f"Credential stored in AD attribute — {account}",
                 affected_object=record.identifier, domain=workspace.domain,
-                sources=[{"source": source} for source in record.sources],
-                evidence={"description": "<redacted credential-like value>", "signals": ["credential marker"]},
-                status="single-source", priority="medium", workspace_artifacts=["inventory.json"],
-                first_seen_scan=workspace.scan_id, current_scan=workspace.scan_id).as_dict())
+                sources=[{"source": source, "observed": True} for source in record.sources],
+                evidence=secret, status="single-source", priority="high",
+                workspace_artifacts=["LDAP/attributes.json"], first_seen_scan=workspace.scan_id,
+                current_scan=workspace.scan_id).as_dict())
     kerberos_findings = []
     for item in exposures["asrep"]:
         state = "enabled" if item.enabled else "disabled"
@@ -724,7 +774,8 @@ def main():
                 evidence={"host": host.attributes, "impact": "relay prerequisite"},
                 status="single-source", priority="medium", workspace_artifacts=["Relay/relay-targets.txt"],
                 first_seen_scan=workspace.scan_id, current_scan=workspace.scan_id).as_dict())
-    workspace.write_json(workspace.findings_path("LDAP", "findings.json"), policy_findings + description_findings)
+    workspace.write_json(workspace.findings_path("LDAP", "findings.json"), policy_findings + description_findings + ldap_secret_findings)
+    workspace.write_json(workspace.findings_path("LDAP", "attributes.json"), ldap_secret_findings)
     workspace.write_json(workspace.findings_path("Kerberos", "findings.json"), kerberos_findings)
     workspace.write_json(workspace.findings_path("Delegation", "findings.json"), delegation_findings)
     for item in gpo_findings:
@@ -743,7 +794,7 @@ def main():
     active_kerberos_findings = [x for x in kerberos_findings
                                 if not (x.get("rule") == "Kerberoastable-account"
                                         and x.get("evidence", {}).get("enabled") is False)]
-    all_findings = (finding_records + policy_findings + description_findings + active_kerberos_findings +
+    all_findings = (finding_records + policy_findings + description_findings + ldap_secret_findings + active_kerberos_findings +
                     domain_security_findings +
                     delegation_findings + relay_findings + smb_findings + acl_findings +
                     ldap_security_findings + [x["normalized"] for x in gpo_findings])

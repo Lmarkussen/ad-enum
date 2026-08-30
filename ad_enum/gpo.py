@@ -6,7 +6,8 @@ from pathlib import Path
 
 TARGET_FILES = {"groups.xml", "services.xml", "scheduledtasks.xml", "scheduledtasksv2.xml",
                 "drives.xml", "datasources.xml", "printers.xml", "shortcuts.xml"}
-SCRIPT_SUFFIXES = {".ps1", ".bat", ".cmd", ".vbs", ".js", ".wsf", ".ini", ".xml", ".config", ".txt"}
+SCRIPT_SUFFIXES = {".ps1", ".bat", ".cmd", ".vbs", ".js", ".wsf", ".ini", ".xml", ".config", ".txt", ".inf", ".pol"}
+SECURITY_FILES = {"gpttmpl.inf", "registry.pol"}
 
 
 def normalize_gpos(rows):
@@ -58,6 +59,29 @@ def inspect_file(gpo, relative_path, content):
                                       "username": extracted.get("username", "UNKNOWN"),
                                       "value": extracted.get("value"), "fingerprint": hashlib.sha256(text.encode()).hexdigest()[:16]}})
     return findings
+
+def parse_security_settings(relative_path, content):
+    """Extract a bounded, evidence-preserving subset of GPO security data."""
+    text = content.decode("utf-8", "replace") if isinstance(content, bytes) else str(content or "")
+    lower = text.lower(); result = []
+    patterns = (
+        ("smb_signing", r"(?:requiresecuritysignature|enablesecuritysignature)\s*=\s*([01])"),
+        ("ldap_signing", r"ldapserverintegrity\s*=\s*([012])"),
+        ("ntlm_level", r"lmcompatibilitylevel\s*=\s*(\d+)"),
+        ("defender_exclusion", r"(?:exclusionpath|exclusionprocess|exclusionextension)\s*=\s*([^\r\n]+)"),
+        ("firewall_profile", r"(?:enablefirewall|inboundconnectiondefault)\s*=\s*([^\r\n]+)"),
+        ("rdp_nla", r"(?:userauthentication|userecuritylayer)\s*=\s*([01])"),
+        ("powershell_logging", r"(?:scriptblocklogging|modulelogging|transcription)\s*=\s*([01])"),
+    )
+    for setting, pattern in patterns:
+        for match in re.finditer(pattern, lower, re.I):
+            result.append({"file": relative_path, "setting": setting, "value": match.group(1).strip()})
+    # Restricted Groups/GPP local-group membership is represented structurally
+    # in XML; retain only explicit local Administrators additions.
+    if "administrators" in lower and any(token in lower for token in ("groupname", "member", "members")):
+        result.append({"file": relative_path, "setting": "local_administrators_membership",
+                       "value": "explicit membership reference"})
+    return result
 
 
 def _extract_credentials(text):

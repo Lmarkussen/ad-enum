@@ -81,10 +81,49 @@ def parse_netexec_smb(text):
                 if result["ip"] == match.group(1): result["smb_authenticated"] = True
     return results
 
+def parse_netexec_shares(text):
+    """Parse NetExec's bounded ``--shares`` table without crawling files."""
+    rows = []
+    current_host = None
+    for line in (text or "").splitlines():
+        host_match = re.search(r"SMB\s+(\S+)\s+([^\s]+).*\(name:([^\)]+)\)", line)
+        if host_match:
+            current_host = {"ip": host_match.group(1), "host": host_match.group(3).strip()}
+        share = re.match(r"\s*(?:Share|SMB)\s*[:|]\s*([^\s|]+).*?(READ|WRITE|READ,WRITE|READWRITE)\b", line, re.I)
+        if not share:
+            share = re.match(r"\s*([^\s|]+)\s+([^\s|]+)\s+(READ(?:,?WRITE)?)\b", line, re.I)
+        if not share:
+            share = re.match(r"\s*([^\s|]+)\s+(READ(?:,?WRITE)?)\b", line, re.I)
+        if share and current_host:
+            name = share.group(1)
+            access = (share.group(2) if len(share.groups()) == 2 else share.group(3)).upper().replace(",", "")
+            rows.append({"host": current_host["host"], "ip": current_host["ip"],
+                         "share": name, "unc": f"\\\\{current_host['host']}\\{name}",
+                         "readable": "READ" in access, "writable": "WRITE" in access,
+                         "source": "netexec", "raw": line})
+    return rows
+
 def sensitive_description(text):
     if isinstance(text, list): text = " ".join(str(x) for x in text)
     if not text: return False
     return bool(re.search(r"(?:password|passwd|pwd)\s*[:=]|(?:username|user)\s*[:=].+[/\\](?:password|passwd|pwd)\s*[:=]|\b(?:api[_ -]?key|token|secret)\s*[:=]", text, re.I))
+
+def extract_attribute_secret(attributes):
+    """Extract explicit value-bearing secrets from selected text attributes."""
+    results = []
+    for attribute in ("description", "info", "comment", "extensionAttribute1", "extensionAttribute2", "extensionAttribute3"):
+        value = attributes.get(attribute)
+        values = value if isinstance(value, list) else [value]
+        for text in values:
+            text = str(text or "")
+            match = re.search(r"(?i)(?:user(?:name)?|account|user\s*id)\s*[:=]\s*[\"']?([^\s;\"']+)[\"']?[^\n]*(?:password|passwd|pwd)\s*[:=]\s*[\"']?([^\s;\"']+)", text)
+            if match:
+                results.append({"attribute": attribute, "username": match.group(1), "value": match.group(2), "type": "LDAP text credential"})
+                continue
+            token = re.search(r"(?i)\b(api[_ -]?key|access[_ -]?token|bearer token|secret)\s*[:=]\s*[\"']?([^\s\"']+)", text)
+            if token:
+                results.append({"attribute": attribute, "username": "UNKNOWN", "value": token.group(2), "type": token.group(1)})
+    return results
 
 @dataclass
 class InventoryRecord:

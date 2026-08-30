@@ -96,7 +96,7 @@ class Collector:
         attrs_ca = ["cn", "dNSHostName", "certificateTemplates", "cACertificate", "flags", "nTSecurityDescriptor"]
         conn.search(f"CN=Enrollment Services,{base}", "(objectClass=pKIEnrollmentService)", attributes=attrs_ca, controls=security_descriptor_control(sdflags=0x04))
         raw_cas = [dict(e.entry_attributes_as_dict, distinguishedName=e.entry_dn) for e in conn.entries]
-        conn.search(root, "(|(objectClass=user)(objectClass=group)(objectClass=computer)(objectClass=msDS-GroupManagedServiceAccount))", attributes=["objectSid", "sAMAccountName", "displayName", "description", "dNSHostName", "userAccountControl", "memberOf", "member", "objectClass", "objectGUID", "primaryGroupID", "lastLogonTimestamp", "pwdLastSet", "servicePrincipalName", "msDS-AllowedToDelegateTo", "msDS-AllowedToActOnBehalfOfOtherIdentity", "msDS-GroupMSAMembership", "adminCount", "ms-Mcs-AdmPwdExpirationTime", "msLAPS-PasswordExpirationTime", "msLAPS-EncryptedPasswordExpirationTime"])
+        conn.search(root, "(|(objectClass=user)(objectClass=group)(objectClass=computer)(objectClass=msDS-GroupManagedServiceAccount))", attributes=["objectSid", "sAMAccountName", "displayName", "description", "info", "comment", "extensionAttribute1", "extensionAttribute2", "extensionAttribute3", "dNSHostName", "userAccountControl", "memberOf", "member", "objectClass", "objectGUID", "primaryGroupID", "lastLogonTimestamp", "pwdLastSet", "servicePrincipalName", "msDS-AllowedToDelegateTo", "msDS-AllowedToActOnBehalfOfOtherIdentity", "msDS-GroupMSAMembership", "adminCount", "ms-Mcs-AdmPwdExpirationTime", "msLAPS-PasswordExpirationTime", "msLAPS-EncryptedPasswordExpirationTime"])
         raw_identities = [dict(e.entry_attributes_as_dict, distinguishedName=e.entry_dn) for e in conn.entries]
         # SCCM publishes site/service metadata below this AD container when
         # the System Management publication is enabled.  Collection is
@@ -150,6 +150,28 @@ class Collector:
         except Exception:
             raw_gpo_links = []
         raw_sites, raw_subnets = [], []
+        raw_dns_zones, raw_dns_records = [], []
+        for dns_partition in (f"DC=DomainDnsZones,{root}", f"DC=ForestDnsZones,{root}"):
+            try:
+                conn.search(dns_partition, "(objectClass=dnsZone)", attributes=["name", "dc", "distinguishedName"])
+                raw_dns_zones.extend(dict(e.entry_attributes_as_dict, distinguishedName=e.entry_dn) for e in conn.entries)
+                conn.search(dns_partition, "(objectClass=dnsNode)", attributes=["name", "dc", "dnsRecord", "distinguishedName"])
+                raw_dns_records.extend(dict(e.entry_attributes_as_dict, distinguishedName=e.entry_dn) for e in conn.entries)
+            except Exception:
+                pass
+        raw_password_settings = []
+        try:
+            pso_base = f"CN=Password Settings Container,CN=System,{root}"
+            conn.search(pso_base, "(objectClass=msDS-PasswordSettings)", attributes=[
+                "name", "distinguishedName", "msDS-PasswordSettingsPrecedence",
+                "msDS-PasswordReversibleEncryptionEnabled", "msDS-PasswordComplexityEnabled",
+                "msDS-MinimumPasswordLength", "msDS-PasswordHistoryLength",
+                "msDS-MinimumPasswordAge", "msDS-MaximumPasswordAge",
+                "msDS-LockoutThreshold", "msDS-LockoutObservationWindow",
+                "msDS-LockoutDuration", "msDS-PSOAppliesTo"])
+            raw_password_settings = [dict(e.entry_attributes_as_dict, distinguishedName=e.entry_dn) for e in conn.entries]
+        except Exception:
+            pass
         try:
             sites_dn = f"CN=Sites,{config}"
             conn.search(sites_dn, "(objectClass=site)", attributes=["cn", "description"])
@@ -276,5 +298,7 @@ class Collector:
                     "gpo_links": raw_gpo_links, "security_descriptors": raw_security_descriptors,
                     "security_descriptor_errors": descriptor_errors,
                     "sites": raw_sites, "subnets": raw_subnets,
-                    "trusts": raw_trusts, "laps_schema": raw_laps_schema}
+                    "trusts": raw_trusts, "laps_schema": raw_laps_schema,
+                    "dns_zones": raw_dns_zones, "dns_records": raw_dns_records,
+                    "password_settings": raw_password_settings}
         return normalize_directory(self.raw)
