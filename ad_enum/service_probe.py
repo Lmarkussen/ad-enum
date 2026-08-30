@@ -66,8 +66,11 @@ def _tds_probe(address, port, *, timeout, connector):
     """Perform a minimal TDS PRELOGIN exchange; no LOGIN7/authentication."""
     # TDS packet type 0x12 is PRELOGIN. This request advertises version and
     # encryption options and contains no account or credential material.
-    payload = bytes([0x00, 0x00, 0x11, 0x00, 0x06,
-                     0x01, 0x00, 0x17, 0x00, 0x01, 0xff,
+    # The offsets are relative to the PRELOGIN payload.  The option table
+    # occupies 11 bytes, followed by the 6-byte version and 1-byte
+    # encryption value.
+    payload = bytes([0x00, 0x00, 0x0b, 0x00, 0x06,
+                     0x01, 0x00, 0x11, 0x00, 0x01, 0xff,
                      0x0f, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00])
     packet = bytes([0x12, 0x00]) + (len(payload) + 8).to_bytes(2, "big") + b"\x00\x00\x01\x00" + payload
     connection = connector((address, port), timeout=timeout)
