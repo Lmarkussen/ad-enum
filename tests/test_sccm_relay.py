@@ -39,10 +39,11 @@ def test_sccm_publication_normalizes_site_and_management_point():
          "cn": ["SMS-MP-P01-MECM.SCCM.LAB"], "objectClass": ["top", "mSSMSManagementPoint"],
          "dNSHostName": ["MECM.sccm.lab"]},
     ]}
-    result = discover(inv, raw)
+    result = discover(inv, raw, {"records": [{"fqdn": "mecm.sccm.lab", "ip_addresses": ["10.1.10.41"]}]})
     assert result["site_code"] == "P01"
     assert result["management_points"][0]["host"] == "MECM.sccm.lab"
     assert result["management_points"][0]["confidence"] == "confirmed"
+    assert result["management_points"][0]["ip_addresses"] == ["10.1.10.41"]
 
 
 def test_sccm_publication_dedupes_endpoint_records():

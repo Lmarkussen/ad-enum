@@ -59,7 +59,8 @@ def parse_sccm_publication(objects):
     result["site_codes"] = sorted(set(result["site_codes"]))
     return result
 
-def discover(inventory, raw=None):
+def discover(inventory, raw=None, dns_map=None):
+    dns_records = {str(x.get("fqdn", "")).lower(): x for x in (dns_map or {}).get("records", [])}
     hosts = []
     relationships = []
     spn_accounts = []
@@ -98,7 +99,9 @@ def discover(inventory, raw=None):
         for endpoint in publication["endpoints"]:
             if endpoint["source"] != item["dn"]:
                 continue
+            address = dns_records.get(endpoint["host"].lower(), {})
             management_points.append({"host": endpoint["host"], "fqdn": endpoint["host"],
+                                      "ip_addresses": address.get("ip_addresses", []),
                                       "site_code": endpoint.get("site_code") or site_code,
                                       "protocol": "unknown", "port": None,
                                       "confidence": "confirmed", "evidence": item["dn"]})
@@ -117,6 +120,9 @@ def discover(inventory, raw=None):
             pxe = {"status": "ENABLED", "implementation": "unknown",
                    "evidence": [{"dn": item["dn"], "attributes": ["netbootSCPBL", "netbootAnswer", "netbootSCP"]}]}
             break
+    for host in hosts:
+        address = dns_records.get(str(host.get("fqdn", "")).lower())
+        if address: host["ip_addresses"] = address.get("ip_addresses", [])
     return {"hosts": hosts, "relationships": relationships, "spn_accounts": spn_accounts,
             "publication": publication,
             "site_code": site_code, "site_code_sources": [x["dn"] for x in publication["objects"]

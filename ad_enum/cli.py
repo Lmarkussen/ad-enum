@@ -181,7 +181,7 @@ def main():
         if result_obj.get("hosts"):
             for host in result_obj["hosts"]:
                 inventory.add("observed_hosts", f"{host.get('ip')}:{host.get('host', host.get('name', ''))}", host, "netexec")
-    sccm_result = discover_sccm(inventory, collector.raw)
+    sccm_result = discover_sccm(inventory, collector.raw, dns_map)
     sccm_result["endpoint_probes"] = probe_management_points(sccm_result.get("management_points", []), a.timeout)
     for mp in sccm_result.get("management_points", []):
         probes = [x for x in sccm_result["endpoint_probes"] if x["host"].lower() == mp["host"].lower()]
