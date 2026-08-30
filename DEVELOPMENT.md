@@ -125,3 +125,23 @@ The host-expansion pass builds the target list from native LDAP computer objects
 Canonical password-policy values now include lockout duration and observation-window seconds (300 each), lockout threshold 5, history 24, and complexity disabled. A small policy observation layer reports the weak minimum length and disabled complexity; user-description analysis remains conservative and produced no credential-like finding for the live inventory. These observations are stored in `LDAP/findings.json` and are not AD CS or ESC rules.
 
 The Relay module is registered as future metadata only and remains `NOT RUN`; the planned source is [depthsecurity/RelayKing-Depth](https://github.com/depthsecurity/RelayKing-Depth). No relay probing or attack action is enabled.
+# 2026-08-30 — Kerberos/account and delegation enumeration slice
+
+AD-Enum remains read-only.  The new Kerberos analysis derives account exposure
+from normalized LDAP user records: `DONT_REQ_PREAUTH` identifies AS-REP
+exposure, SPNs identify potentially Kerberoastable accounts, and
+`PASSWD_NOTREQD` is reported only for enabled accounts.  No AS-REP, TGS, or
+managed-service-account password material is requested or stored.
+
+Delegation inventory records unconstrained delegation, constrained delegation
+(`msDS-AllowedToDelegateTo` plus protocol-transition state), and RBCD ACL
+evidence from `msDS-AllowedToActOnBehalfOfOtherIdentity`.  DC unconstrained
+delegation is retained as expected context and is suppressed from ordinary
+findings; non-DC cases remain reportable.  gMSA records retain the membership
+security descriptor's allow-ACE evidence only; managed passwords are never
+retrieved.
+
+The current live lab state and ESC1/ESC7 regression are unchanged.  Positive
+lab fixtures for these new account/delegation checks have not been created in
+this pass; tests use self-contained normalized records.  Live validation still
+requires the authorized lab credentials and should be recorded separately.

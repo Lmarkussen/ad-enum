@@ -30,7 +30,7 @@ def _bloodhound_identifier(row, props):
         value = value[value.index("S-"):]
     return value or props.get("distinguishedname") or props.get("name")
 
-KINDS = ("domains", "users", "groups", "computers", "domain_controllers", "ous", "gpos", "relationships")
+KINDS = ("domains", "users", "groups", "computers", "gmsa", "domain_controllers", "ous", "gpos", "relationships")
 
 def _first(value, default=""):
     return value[0] if isinstance(value, list) and value else (value if value is not None else default)
@@ -176,7 +176,8 @@ def native_inventory(raw):
     inventory.add("domains", root, {"distinguishedName": root}, "native-ldap")
     for row in raw.get("identities", []):
         classes = {str(x).lower() for x in row.get("objectClass", [])}
-        kind = "groups" if "group" in classes else "computers" if "computer" in classes else "users"
+        kind = ("gmsa" if "msds-groupmanagedserviceaccount" in classes else
+                "groups" if "group" in classes else "computers" if "computer" in classes else "users")
         identifier = _identifier(row.get("objectSid")) or row.get("sAMAccountName") or row.get("distinguishedName")
         inventory.add(kind, identifier, row, "native-ldap")
         if kind == "computers":
@@ -190,6 +191,8 @@ def native_inventory(raw):
             except (TypeError, ValueError): uac_value, group_value = 0, 0
             if uac_value & 0x2000 or group_value == 516 or "OU=DOMAIN CONTROLLERS" in dn.upper() or "ldap/" in spns.lower():
                 inventory.add("domain_controllers", identifier, {"evidence": "native LDAP DC indicators", **row}, "native-ldap")
+        if kind == "gmsa":
+            inventory.add("gmsa", identifier, {"gmsa": True, **row}, "native-ldap")
     inventory.password_policy = normalize_password_attributes(raw.get("passwordPolicy", {}), "native-ldap")
     return inventory
 

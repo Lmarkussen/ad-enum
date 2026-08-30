@@ -120,7 +120,7 @@ class Collector:
         attrs_ca = ["cn", "dNSHostName", "certificateTemplates", "cACertificate", "flags", "nTSecurityDescriptor"]
         conn.search(f"CN=Enrollment Services,{base}", "(objectClass=pKIEnrollmentService)", attributes=attrs_ca, controls=security_descriptor_control(sdflags=0x04))
         raw_cas = [dict(e.entry_attributes_as_dict, distinguishedName=e.entry_dn) for e in conn.entries]
-        conn.search(root, "(|(objectClass=user)(objectClass=group)(objectClass=computer))", attributes=["objectSid", "sAMAccountName", "displayName", "description", "dNSHostName", "userAccountControl", "memberOf", "member", "objectClass", "objectGUID", "primaryGroupID", "lastLogonTimestamp", "pwdLastSet"])
+        conn.search(root, "(|(objectClass=user)(objectClass=group)(objectClass=computer)(objectClass=msDS-GroupManagedServiceAccount))", attributes=["objectSid", "sAMAccountName", "displayName", "description", "dNSHostName", "userAccountControl", "memberOf", "member", "objectClass", "objectGUID", "primaryGroupID", "lastLogonTimestamp", "pwdLastSet", "servicePrincipalName", "msDS-AllowedToDelegateTo", "msDS-AllowedToActOnBehalfOfOtherIdentity", "msDS-GroupMSAMembership", "adminCount"])
         raw_identities = [dict(e.entry_attributes_as_dict, distinguishedName=e.entry_dn) for e in conn.entries]
         conn.search(f"CN=Certificate Templates,{base}", "(objectClass=pKICertificateTemplate)", search_scope="LEVEL",
                     attributes=["cn", "displayName", "objectGUID", "objectSid", "msPKI-Certificate-Name-Flag", "msPKI-Enrollment-Flag",

@@ -13,6 +13,8 @@ from .core.findings import NormalizedFinding
 from .external import execute_external
 from .inventory import native_inventory, DomainInventory, build_targets, sensitive_description, parse_netexec_smb
 from .sccm import discover as discover_sccm
+from .kerberos import roastable
+from .delegation import enumerate_delegation, enumerate_gmsa
 
 
 def main():
@@ -71,7 +73,7 @@ def main():
     print(f"Domain: {root}")
     requested = []
     for module in (x.strip().lower() for x in a.modules.split(",") if x.strip()):
-        if module == "all": requested.extend(("bloodhound", "adcs-certipy", "ldapdomaindump", "netexec", "ldap", "adcs-native", "sccm-discovery"))
+        if module == "all": requested.extend(("bloodhound", "adcs-certipy", "ldapdomaindump", "netexec", "ldap", "adcs-native", "kerberos", "delegation", "sccm-discovery"))
         elif module == "adcs": requested.extend(("ldap", "adcs-native", "adcs-certipy"))
         else: requested.append(module)
     plan = ExecutionPlanner().plan(requested or ["adcs-native"])
@@ -102,6 +104,17 @@ def main():
         if hasattr(obj.get("inventory") if isinstance(obj, dict) else None, "records"):
             inventory.merge(obj["inventory"])
     findings, comparisons, coverage, dangling, duplicates = scan(cas, templates, certipy=certipy)
+    exposures = roastable(inventory)
+    delegation_records = enumerate_delegation(inventory)
+    gmsa_records = enumerate_gmsa(inventory)
+    workspace.write_json(workspace.findings_path("Kerberos", "inventory.json"),
+                         {key: [item.as_dict() for item in value] for key, value in exposures.items()})
+    workspace.write_json(workspace.findings_path("Delegation", "inventory.json"),
+                         {"delegation": [item.as_dict() for item in delegation_records],
+                          "gmsa": gmsa_records})
+    workspace.write_json(workspace.findings_path("Kerberos", "gmsa.json"), gmsa_records)
+    coverage.add("Kerberos / account exposure", "PASS", "native LDAP account flags and SPNs")
+    coverage.add("Delegation / LDAP configuration", "PASS", "UAC, constrained delegation, and RBCD observations")
     labels = {"bloodhound": "BloodHound", "adcs-certipy": "Certipy",
               "ldapdomaindump": "LDAPDomainDump", "netexec": "NetExec"}
     for module_id, result in external_results.items():
@@ -225,8 +238,52 @@ def main():
                 evidence={"description": "<redacted credential-like value>", "signals": ["credential marker"]},
                 status="single-source", priority="medium", workspace_artifacts=["inventory.json"],
                 first_seen_scan=workspace.scan_id, current_scan=workspace.scan_id).as_dict())
+    kerberos_findings = []
+    for item in exposures["asrep"]:
+        state = "enabled" if item.enabled else "disabled"
+        kerberos_findings.append(NormalizedFinding(
+            finding_id=f"kerberos:asrep:{item.identifier}", category="KERBEROS",
+            rule="AS-REP-roastable", title=f"AS-REP roastable user ({state})",
+            affected_object=item.username, domain=workspace.domain,
+            sources=[{"source": source} for source in item.sources],
+            evidence={"enabled": item.enabled, "preauthentication_required": False,
+                      "userAccountControl": item.attributes.get("userAccountControl")},
+            status="single-source", priority="medium", workspace_artifacts=["Kerberos/inventory.json"],
+            first_seen_scan=workspace.scan_id, current_scan=workspace.scan_id).as_dict())
+    for item in exposures["kerberoast"]:
+        state = "enabled" if item.enabled else "disabled"
+        kerberos_findings.append(NormalizedFinding(
+            finding_id=f"kerberos:spn:{item.identifier}", category="KERBEROS",
+            rule="Kerberoastable-account", title=f"Kerberoastable account ({state})",
+            affected_object=item.username, domain=workspace.domain,
+            sources=[{"source": source} for source in item.sources],
+            evidence={"enabled": item.enabled, "spns": item.spns,
+                      "userAccountControl": item.attributes.get("userAccountControl"),
+                      "pwdLastSet": item.attributes.get("pwdLastSet")},
+            status="single-source", priority="medium", workspace_artifacts=["Kerberos/inventory.json"],
+            first_seen_scan=workspace.scan_id, current_scan=workspace.scan_id).as_dict())
+    for item in exposures["password_not_required"]:
+        kerberos_findings.append(NormalizedFinding(
+            finding_id=f"account:passwd-not-required:{item.identifier}", category="ACCOUNT",
+            rule="PASSWD_NOTREQD", title="Password not required", affected_object=item.username,
+            domain=workspace.domain, sources=[{"source": source} for source in item.sources],
+            evidence={"enabled": True, "userAccountControl": item.attributes.get("userAccountControl")},
+            status="single-source", priority="medium", workspace_artifacts=["Kerberos/inventory.json"],
+            first_seen_scan=workspace.scan_id, current_scan=workspace.scan_id).as_dict())
+    delegation_findings = []
+    for item in delegation_records:
+        if item.kind == "unconstrained" and item.expected_dc: continue
+        delegation_findings.append(NormalizedFinding(
+            finding_id=f"delegation:{item.kind}:{item.target}", category="DELEGATION", rule=item.kind,
+            title=f"{item.kind.replace('-', ' ').title()} delegation", affected_object=item.target,
+            domain=workspace.domain, sources=[{"source": source} for source in item.sources],
+            evidence=item.as_dict(), status="single-source", priority="medium",
+            workspace_artifacts=["Delegation/inventory.json"], first_seen_scan=workspace.scan_id,
+            current_scan=workspace.scan_id).as_dict())
     workspace.write_json(workspace.findings_path("LDAP", "findings.json"), policy_findings + description_findings)
-    all_findings = finding_records + policy_findings + description_findings
+    workspace.write_json(workspace.findings_path("Kerberos", "findings.json"), kerberos_findings)
+    workspace.write_json(workspace.findings_path("Delegation", "findings.json"), delegation_findings)
+    all_findings = finding_records + policy_findings + description_findings + kerberos_findings + delegation_findings
     workspace.write_json(workspace.findings_path("vulnerabilities", "findings.json"), all_findings)
     workspace.write_text(workspace.findings_path("vulnerabilities", "findings.txt"),
                           "\n".join(f"[{x['category']}] {x['title']}" for x in all_findings) + "\n")
@@ -271,6 +328,9 @@ def main():
                f"Credential-like descriptions: {len(description_findings)}\n\n"
                f"Password policy source: {inventory.password_policy.get('source', 'unavailable')}\n\n"
                f"Hosts discovered: {len(context.targets)}; SMB observations: {len(inventory.records.get('observed_hosts', {}))}\n\n"
+               f"Kerberos exposures: AS-REP={len(exposures['asrep'])}; SPN={len(exposures['kerberoast'])}\n"
+               f"Delegation: unconstrained non-DC={sum(x.kind == 'unconstrained' and not x.expected_dc for x in delegation_records)}; "
+               f"constrained={sum(x.kind == 'constrained' for x in delegation_records)}; RBCD={sum(x.kind == 'rbcd' for x in delegation_records)}\n\n"
                "Execution plan\n" + "\n".join(f"  {item.spec.name}: {item.status.value}"
                                                + (f" ({item.reason})" if item.reason else "") for item in plan) + "\n\n"
                f"{coverage.render()}\n")
