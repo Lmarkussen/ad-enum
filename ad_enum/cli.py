@@ -222,6 +222,12 @@ def main():
     # Establish one scan-scoped accumulator before any analysis records
     # coverage; the final write changes scan status to COMPLETE.
     coverage = CoverageReport()
+    sccm_result = {"hosts": [], "management_points": [], "distribution_points": [],
+                   "site_servers": [], "sms_providers": [], "sql_servers": [],
+                   "sup_wsus": [], "pxe": {"status": "NOT TESTED"}, "status": "NOT TESTED"}
+    # All scan-scoped aggregates exist before any module can consume them.
+    policy_findings, description_findings, ldap_secret_findings = [], [], []
+    discovered_credentials = []
     workspace.write_json(workspace.root / "scan.json", {
         "status": "INCOMPLETE", "domain": root, "canonical_domain": workspace.domain,
         "target": target, "scan_id": workspace.scan_id,
@@ -378,15 +384,6 @@ def main():
                  f"bind={anonymous_ldap.get('bind')}, domain-data={anonymous_ldap.get('domain_data')}")
     coverage.add("SMB / anonymous posture", "PARTIAL" if any(x.get("error") for x in anonymous_smb) else "PASS",
                  f"{len(anonymous_smb)} host(s) bounded")
-    coverage.add("SCCM / infrastructure discovery", "PASS", f"{len(sccm_result['hosts'])} candidate host(s)")
-    # Keep SCCM coverage granular: the aggregate line describes the
-    # discovery family only and must not imply that every role is observable.
-    coverage.add("SCCM / topology", "PASS", "normalized site and role candidates")
-    coverage.add("SCCM / management point", "PASS" if sccm_result.get("management_points") else "PARTIAL",
-                 f"{len(sccm_result.get('management_points', []))} candidate(s)")
-    for capability in ("distribution point", "PXE / WDS", "boot metadata", "task-sequence metadata",
-                       "SQL association", "SUP / WSUS", "SCCM ACL", "DP content metadata"):
-        coverage.add(f"SCCM / {capability}", "NOT TESTED", "requires live role evidence")
     exposures = roastable(inventory)
     delegation_records = enumerate_delegation(inventory)
     gmsa_records = enumerate_gmsa(inventory)
@@ -549,6 +546,15 @@ def main():
     workspace.write_json(workspace.raw_dir("SCCM") / "ldap-publication.json", collector.raw.get("sccm", []))
     workspace.write_json(workspace.findings_path("SCCM", "endpoints.json"), sccm_result.get("endpoint_probes", []))
     workspace.write_json(workspace.findings_path("SCCM", "pxe.json"), sccm_result.get("pxe", {}))
+    coverage.add("SCCM / infrastructure discovery", "PASS", f"{len(sccm_result.get('hosts', []))} candidate host(s)")
+    # Keep SCCM coverage granular: the aggregate line describes the
+    # discovery family only and must not imply that every role is observable.
+    coverage.add("SCCM / topology", "PASS", "normalized site and role candidates")
+    coverage.add("SCCM / management point", "PASS" if sccm_result.get("management_points") else "PARTIAL",
+                 f"{len(sccm_result.get('management_points', []))} candidate(s)")
+    for capability in ("distribution point", "PXE / WDS", "boot metadata", "task-sequence metadata",
+                       "SQL association", "SUP / WSUS", "SCCM ACL", "DP content metadata"):
+        coverage.add(f"SCCM / {capability}", "NOT TESTED", "requires live role evidence")
     console.complete("SCCM analysis complete")
     expected_acl_principals = {
         str(record.identifier) for record in inventory.records.get("users", {}).values()
@@ -627,26 +633,6 @@ def main():
     workspace.write_json(workspace.findings_path("ACL", "privileged-groups.json"), privileged_groups)
     workspace.write_json(workspace.findings_path("ACL", "inventory.json"),
                          {"gpo_acls": gpo_acls, "high_value_acls": high_value_acls})
-    discovered_credentials = []
-    seen_credentials = set()
-    for item in gpo_findings + ldap_secret_findings:
-        value = item.get("evidence", {}).get("value")
-        if not value: continue
-        evidence = item.get("evidence", {})
-        account = item.get("account") or evidence.get("username") or item.get("affected_object", "")
-        key = (str(account).lower(), str(value), item.get("rule"))
-        if key in seen_credentials: continue
-        seen_credentials.add(key)
-        discovered_credentials.append({"account": account or "UNKNOWN",
-                                       "value": value,
-                                       "type": evidence.get("type", item.get("rule")),
-                                       "source": item.get("file") or evidence.get("attribute"),
-                                       "context": item.get("gpo", {}).get("display_name") or item.get("title")})
-    workspace.write_json(workspace.root / "credentials.json", discovered_credentials)
-    workspace.write_text(workspace.root / "credentials.txt", "\n\n".join(
-        f"Credential exposure — {x['context']}\n  Account: {x['account']}\n"
-        f"  Value: {x['value']}\n  Type: {x['type']}\n  Source: {x['source']}"
-        for x in discovered_credentials) + ("\n" if discovered_credentials else ""))
     acl_findings = []
     for observation in gpo_acl_observations + high_value_acl_observations:
         acl_target = observation["target"]
@@ -770,7 +756,6 @@ def main():
     })
     # Small, descriptive inventory observations.  These are deliberately
     # separate from AD CS vulnerability rules.
-    policy_findings = []
     policy = inventory.password_policy.get("canonical", {})
     if policy.get("complexity_enabled") is False:
         policy_findings.append(NormalizedFinding(
@@ -789,8 +774,6 @@ def main():
             evidence={"canonical": policy, "raw": inventory.password_policy},
             status="single-source", priority="medium", workspace_artifacts=["inventory-comparison.json"],
             first_seen_scan=workspace.scan_id, current_scan=workspace.scan_id).as_dict())
-    description_findings = []
-    ldap_secret_findings = []
     for record in inventory.records.get("users", {}).values():
         for secret in extract_attribute_secret(record.attributes):
             account = record.attributes.get("sAMAccountName", record.identifier)
@@ -804,6 +787,26 @@ def main():
                 evidence=secret, status="single-source", priority="high",
                 workspace_artifacts=["LDAP/attributes.json"], first_seen_scan=workspace.scan_id,
                 current_scan=workspace.scan_id).as_dict())
+    seen_credentials = set()
+    for item in gpo_findings + ldap_secret_findings:
+        value = item.get("evidence", {}).get("value")
+        if not value:
+            continue
+        evidence = item.get("evidence", {})
+        account = item.get("account") or evidence.get("username") or item.get("affected_object", "")
+        key = (str(account).lower(), str(value), item.get("rule"))
+        if key in seen_credentials:
+            continue
+        seen_credentials.add(key)
+        discovered_credentials.append({"account": account or "UNKNOWN", "value": value,
+                                       "type": evidence.get("type", item.get("rule")),
+                                       "source": item.get("file") or evidence.get("attribute"),
+                                       "context": item.get("gpo", {}).get("display_name") or item.get("title")})
+    workspace.write_json(workspace.root / "credentials.json", discovered_credentials)
+    workspace.write_text(workspace.root / "credentials.txt", "\n\n".join(
+        f"Credential exposure — {x['context']}\n  Account: {x['account']}\n"
+        f"  Value: {x['value']}\n  Type: {x['type']}\n  Source: {x['source']}"
+        for x in discovered_credentials) + ("\n" if discovered_credentials else ""))
     kerberos_findings = []
     for item in exposures["asrep"]:
         state = "enabled" if item.enabled else "disabled"
