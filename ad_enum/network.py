@@ -53,10 +53,22 @@ def build_dns_map(inventory, networkhound=None, resolver=socket.getaddrinfo):
         _record(records, attrs.get("host") or attrs.get("hostname") or attrs.get("name"),
                 "netexec", [attrs.get("ip")] if attrs.get("ip") else [], resolution_method="netexec")
     for item in (networkhound or {}).get("records", []):
-        _record(records, item.get("fqdn") or item.get("hostname"), "networkhound",
-                item.get("ip_addresses") or item.get("ips", []), resolution_method="networkhound",
-                ad_site=item.get("ad_site"), subnet=item.get("subnet"), object_sid=item.get("object_sid"),
-                distinguished_name=item.get("distinguished_name", ""))
+        sid = item.get("object_sid", "")
+        target = next((x for x in records.values() if sid and x.get("object_sid") == sid), None)
+        if target is not None:
+            for ip in _ips(item.get("ip_addresses") or item.get("ips", [])):
+                if ip not in target["ip_addresses"]: target["ip_addresses"].append(ip)
+                bucket = "ipv6_addresses" if ":" in ip else "ipv4_addresses"
+                if ip not in target[bucket]: target[bucket].append(ip)
+            if "networkhound" not in target["sources"]: target["sources"].append("networkhound")
+            if "networkhound" not in target["resolution_methods"]: target["resolution_methods"].append("networkhound")
+            if item.get("ad_site"): target["ad_site"] = item["ad_site"]
+            if item.get("subnet"): target["subnet"] = item["subnet"]
+        else:
+            _record(records, item.get("fqdn") or item.get("hostname"), "networkhound",
+                    item.get("ip_addresses") or item.get("ips", []), resolution_method="networkhound",
+                    ad_site=item.get("ad_site"), subnet=item.get("subnet"), object_sid=sid,
+                    distinguished_name=item.get("distinguished_name", ""))
     for item in records.values():
         item["ip_addresses"].sort(); item["ipv4_addresses"].sort(); item["ipv6_addresses"].sort()
         if len(item["ip_addresses"]) > 1:
@@ -70,13 +82,25 @@ def parse_networkhound(data):
     """Accept NetworkHound's OpenGraph JSON without depending on its classes."""
     records = []
     if not isinstance(data, dict): return {"records": records, "raw_supported": False}
-    nodes = data.get("nodes") or data.get("data", {}).get("nodes", [])
+    graph = data.get("graph", data)
+    nodes = graph.get("nodes", []) if isinstance(graph, dict) else []
+    node_map = {str(node.get("id")): node for node in nodes if isinstance(node, dict)}
+    subnet_map = {str(node.get("id")): node.get("properties", {}).get("subnet")
+                  for node in nodes if isinstance(node, dict) and "Subnet" in node.get("kinds", [])}
+    located = {}
+    for edge in graph.get("edges", []) if isinstance(graph, dict) else []:
+        if edge.get("kind") != "LocatedIn": continue
+        start = edge.get("start", {}).get("value"); end = edge.get("end", {}).get("value")
+        if start in node_map and end in subnet_map: located[start] = subnet_map[end]
     for node in nodes if isinstance(nodes, list) else []:
         props = node.get("properties", node.get("Properties", node)) if isinstance(node, dict) else {}
         fqdn = props.get("dns_hostname") or props.get("fqdn") or props.get("name")
         ips = props.get("ip_addresses") or props.get("ip_address") or []
         if isinstance(ips, str): ips = [x.strip() for x in ips.split(";") if x.strip()]
-        if fqdn and ips: records.append({"fqdn": fqdn, "ip_addresses": ips,
-                                         "object_sid": props.get("sid", ""),
-                                         "ad_site": props.get("site"), "subnet": props.get("subnet")})
-    return {"records": records, "raw_supported": True}
+        if ips and (fqdn or "Computer" in node.get("kinds", [])):
+            records.append({"fqdn": fqdn, "ip_addresses": ips,
+                            "object_sid": props.get("sid", "") or node.get("id", ""),
+                            "ad_site": props.get("site"), "subnet": props.get("subnet") or located.get(str(node.get("id")))})
+    return {"records": records, "sites": [node.get("properties", {}) for node in nodes if "Site" in node.get("kinds", [])],
+            "subnets": [node.get("properties", {}) for node in nodes if "Subnet" in node.get("kinds", [])],
+            "raw_supported": True}

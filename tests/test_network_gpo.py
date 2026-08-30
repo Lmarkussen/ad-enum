@@ -15,8 +15,9 @@ def test_dns_map_merges_sources_and_retains_multiple_ips(monkeypatch):
 
 
 def test_networkhound_opengraph_normalization():
-    result = parse_networkhound({"nodes": [{"properties": {"name": "MECM", "dns_hostname": "mecm.sccm.lab", "ip_addresses": ["10.1.10.41"]}}]})
-    assert result["records"][0]["fqdn"] == "mecm.sccm.lab"
+    result = parse_networkhound({"graph": {"nodes": [{"id": "S-1", "kinds": ["Computer"], "properties": {"ip_addresses": ["10.1.10.41"]}}, {"id": "N-1", "kinds": ["Subnet"], "properties": {"subnet": "10.1.10.0/24"}}], "edges": [{"kind": "LocatedIn", "start": {"value": "S-1"}, "end": {"value": "N-1"}}]}})
+    assert result["records"][0]["object_sid"] == "S-1"
+    assert result["records"][0]["subnet"] == "10.1.10.0/24"
 
 
 def test_gpo_metadata_and_cpassword_are_redacted():
