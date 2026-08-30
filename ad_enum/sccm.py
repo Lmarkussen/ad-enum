@@ -14,24 +14,45 @@ def parse_sccm_publication(objects):
         if not isinstance(obj, dict):
             continue
         attrs = {str(k).lower(): v for k, v in obj.items()}
-        values = []
+        cn = str((_values(attrs, "cn") or _values(attrs, "name") or [""])[0])
+        classes = {str(v).lower() for v in _values(attrs, "objectclass")}
+        values = [cn]
         for key in ("keywords", "mssms-assignment-site-code", "mssms-site-code"):
             values.extend(str(v) for v in _values(attrs, key))
-        site_codes = sorted({m.upper() for value in values for m in re.findall(r"\b[A-Z][A-Z0-9]{2}\b", value)})
+        # SCCM object names encode the site code as SMS-Site-<code> and
+        # SMS-MP-<code>-<host>. Do not mistake the literal ``SMS`` prefix
+        # for a site code; arbitrary keyword values are only secondary
+        # evidence and are filtered the same way.
+        encoded = re.findall(r"SMS-(?:SITE|MP)-([A-Z][A-Z0-9]{2})(?:-|$)", cn, re.I)
+        candidates = encoded or [m for value in values[1:]
+                                 for m in re.findall(r"\b[A-Z][A-Z0-9]{2}\b", value)]
+        site_codes = sorted({m.upper() for m in candidates if m.upper() != "SMS"})
         for code in site_codes:
             if code not in result["site_codes"]: result["site_codes"].append(code)
         roles = [str(v) for v in _values(attrs, "mssms-site-system-roles")]
+        if "mssmssite" in classes:
+            roles.append("site")
+        if "mssmsmanagementpoint" in classes:
+            roles.append("management-point")
+        if "serviceadministrationpoint" in classes or "intellimirrorscp" in classes:
+            roles.append("service-administration-point")
         bindings = [str(v) for v in _values(attrs, "servicebindinginformation")]
         dns = [str(v) for v in (_values(attrs, "servicednsname") + _values(attrs, "dnshostname"))]
-        item = {"dn": obj.get("distinguishedName", ""), "object_class": _values(attrs, "objectclass"),
+        item = {"dn": obj.get("distinguishedName", ""), "cn": cn,
+                "object_class": _values(attrs, "objectclass"),
                 "site_codes": site_codes, "roles": roles, "service_dns_names": dns,
                 "service_bindings": bindings, "raw": obj}
         result["objects"].append(item)
         result["roles"].extend(roles)
-        result["endpoints"].extend({"host": host, "source": obj.get("distinguishedName", "")}
+        result["endpoints"].extend({"host": host, "source": obj.get("distinguishedName", ""),
+                                     "site_code": site_codes[0] if len(site_codes) == 1 else None,
+                                     "roles": sorted(set(roles))}
                                     for host in dns if host)
     result["roles"] = sorted(set(result["roles"]))
-    result["endpoints"] = sorted(result["endpoints"], key=lambda x: (x["host"], x["source"]))
+    endpoint_map = {(item["host"].lower(), item["source"].lower()): item
+                    for item in result["endpoints"]}
+    result["endpoints"] = sorted(endpoint_map.values(),
+                                  key=lambda x: (x["host"], x["source"]))
     result["site_codes"] = sorted(set(result["site_codes"]))
     return result
 
@@ -65,6 +86,19 @@ def discover(inventory, raw=None):
                 relationships.append({"host": name, "role": hint, "confidence": "candidate",
                                       "evidence": {"hints": sorted(set(hints)), "spns": list(spns)}})
     publication = parse_sccm_publication((raw or {}).get("sccm", []))
+    site_code = publication["site_codes"][0] if len(publication["site_codes"]) == 1 else None
+    management_points = []
+    for item in publication["objects"]:
+        item_roles = {role.lower() for role in item["roles"]}
+        if "management-point" not in item_roles:
+            continue
+        for endpoint in publication["endpoints"]:
+            if endpoint["source"] != item["dn"]:
+                continue
+            management_points.append({"host": endpoint["host"], "fqdn": endpoint["host"],
+                                      "site_code": endpoint.get("site_code") or site_code,
+                                      "protocol": "unknown", "port": None,
+                                      "confidence": "confirmed", "evidence": item["dn"]})
     for endpoint in publication["endpoints"]:
         for host in hosts:
             if endpoint["host"].lower() in {host["name"].lower(), host["fqdn"].lower()}:
@@ -73,7 +107,9 @@ def discover(inventory, raw=None):
                 host["confidence"] = "sccm-publication"
     return {"hosts": hosts, "relationships": relationships, "spn_accounts": spn_accounts,
             "publication": publication,
-            "site_code": None, "management_points": [], "distribution_points": [],
+            "site_code": site_code, "site_code_sources": [x["dn"] for x in publication["objects"]
+                            if site_code and site_code in x["site_codes"]],
+            "management_points": management_points, "distribution_points": [],
             "site_servers": [], "sms_providers": [], "sql_servers": [x for x in hosts if x["role"] == "sql-candidate"],
             "pxe": {"status": "UNKNOWN", "evidence": []},
             "sup_wsus": [], "status": "sccm-publication-and-inventory"}

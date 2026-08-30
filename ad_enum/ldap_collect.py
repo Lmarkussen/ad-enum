@@ -123,8 +123,15 @@ class Collector:
                     controls=security_descriptor_control(sdflags=0x04))
         raw_templates = [dict(e.entry_attributes_as_dict, distinguishedName=e.entry_dn) for e in conn.entries]
         self._close(conn, state)
+        # The System Management subtree and the serviceConnectionPoint search
+        # overlap on real domains. Keep one LDAP-shaped record per DN so
+        # downstream provenance/counts are deterministic.
+        deduped_sccm = {}
+        for item in raw_sccm:
+            dn = str(item.get("distinguishedName", ""))
+            deduped_sccm[dn.lower()] = item
         self.raw = {"defaultNamingContext": root, "configurationNamingContext": config,
                     "passwordPolicy": {k: domain_policy[k][0] for k in policy_attrs if k in domain_policy and domain_policy[k]},
                     "cas": raw_cas, "templates": raw_templates, "identities": raw_identities,
-                    "sccm": raw_sccm}
+                    "sccm": list(deduped_sccm.values())}
         return normalize_directory(self.raw)
