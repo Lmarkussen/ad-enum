@@ -11,7 +11,11 @@ def find_executable(name):
     if path:
         return path
     candidate = Path.home() / ".local" / "bin" / name
-    return str(candidate) if candidate.is_file() else None
+    if candidate.is_file(): return str(candidate)
+    if name == "relayking.py":
+        candidate = Path.home() / "RelayKing-Depth" / name
+        if candidate.is_file(): return str(candidate)
+    return None
 
 class PlanStatus(str, Enum):
     READY = "READY"
