@@ -35,7 +35,7 @@ def report():
     print("\nRequired Tools")
     tools = [("Certipy", "certipy", "certipy-ad"), ("BloodHound", "bloodhound-python", "bloodhound"),
              ("LDAPDomainDump", "ldapdomaindump", "ldapdomaindump"), ("NetExec", "nxc", "netexec"),
-             ("Impacket", "impacket-smbclient", "impacket")]
+             ("Impacket", "smbclient.py", "impacket")]
     statuses = {}
     for label, command, package in tools:
         status, version = _tool(command, package=package)
