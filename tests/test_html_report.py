@@ -60,6 +60,16 @@ def test_html_lists_aggregated_affected_objects():
     assert "CLIENT.sccm.lab" in report
 
 
+def test_html_shows_authenticated_access():
+    model = _model()
+    model["access"] = [{"host": "DC.sccm.lab", "roles": ["Domain Controller"],
+                         "protocol": "SSH", "authentication": "AUTHENTICATED",
+                         "privilege": "UNKNOWN", "principal": "user", "source": "NetExec"}]
+    report = render_html(model)
+    assert "Authenticated Access" in report
+    assert "AUTHENTICATED" in report
+
+
 def test_sccm_artifact_policy_is_bounded():
     limits = SCCMArtifactLimits(max_files=2, max_file_bytes=10, max_total_bytes=15)
     selected = bounded_artifact_candidates([{"name": "a", "size": 10}, {"name": "b", "size": 6}, {"name": "c", "size": 1}], limits)

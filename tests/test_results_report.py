@@ -53,6 +53,15 @@ def test_aggregated_finding_lists_affected_objects(tmp_path):
     assert "10.1.10.43" in report
 
 
+def test_results_report_shows_authenticated_access_without_privilege_inference(tmp_path):
+    report = _results_text("SCCM.LAB", "dc.sccm.lab", {}, DomainInventory(), [], [], [],
+                           ScanWorkspace(tmp_path, "sccm.lab"), access_records=[
+                               {"host": "DC.sccm.lab", "protocol": "SSH",
+                                "authentication": "AUTHENTICATED", "privilege": "UNKNOWN"}])
+    assert "Authenticated Access" in report
+    assert "DC.sccm.lab  SSH ........ AUTHENTICATED" in report
+
+
 def test_console_field_has_one_status_column():
     lines = [Console.field(label, "PASS") for label in
              ("Native LDAP", "BloodHound", "Certipy", "LDAPDomainDump", "NetExec")]

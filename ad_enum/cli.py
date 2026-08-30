@@ -31,6 +31,7 @@ from .reporting.html import write_html_report
 from .recon import (normalize_mssql, normalize_dfs, normalize_services,
                     normalize_trust_context, build_privilege_paths)
 from .service_probe import DEFAULT_SERVICES, probe_known_services
+from .access import from_netexec_hosts, merge_access
 
 
 CATEGORY_ORDER = ("ADCS", "POLICY", "KERBEROS", "ACCOUNT", "DELEGATION",
@@ -143,8 +144,18 @@ def _service_summary_lines(services, limit=None):
     return lines
 
 
+def _access_summary_lines(access_records):
+    lines = []
+    for item in access_records or []:
+        if item.get("authentication") != "AUTHENTICATED":
+            continue
+        lines.append(f"  {item.get('host', 'unknown')}  {item.get('protocol', 'UNKNOWN')} ........ AUTHENTICATED")
+    return lines
+
+
 def _results_text(root, target, external_results, inventory, cas, templates, all_findings,
-                  workspace, *, corroborated=0, disagreements=0, smb_shares=None, services=None):
+                  workspace, *, corroborated=0, disagreements=0, smb_shares=None, services=None,
+                  access_records=None):
     lines = ["AD-Enum", "", "Target",
              Console.field("Domain", root), Console.field("DC", target), "",
              "Collectors", Console.field("Native LDAP", "PASS")]
@@ -179,6 +190,9 @@ def _results_text(root, target, external_results, inventory, cas, templates, all
     service_lines = _service_summary_lines(services)
     if service_lines:
         lines.extend(["", "Service Exposure", *service_lines])
+    access_lines = _access_summary_lines(access_records)
+    if access_lines:
+        lines.extend(["", "Authenticated Access", *access_lines])
     lines.extend(["", "Findings"])
     finding_lines = _finding_lines(all_findings)
     lines.extend(finding_lines or ["  None"])
@@ -663,6 +677,19 @@ def main():
     coverage.add("Services / bounded exposure inventory", "PASS" if service_inventory else "PARTIAL",
                  f"{len(service_inventory)} service observation(s)")
     console.complete("Service exposure analysis complete")
+    access_records = merge_access(from_netexec_hosts(
+        external_results.get("netexec", {}).get("result", {}).get("hosts", []), a.username))
+    if any(item.get("authentication") == "AUTHENTICATED" for item in access_records):
+        coverage.add("Access / current-identity SMB auth", "PASS", "reused NetExec SMB authentication evidence")
+    else:
+        coverage.add("Access / current-identity SMB auth", "NOT TESTED", "NetExec SMB authentication evidence unavailable")
+    coverage.add("Access / current-identity LDAP auth", "PASS", "native LDAP collection authenticated")
+    for protocol in ("SSH", "RDP", "WINRM", "MSSQL"):
+        coverage.add(f"Access / current-identity {protocol} auth", "NOT TESTED",
+                     "protocol-specific authentication adapter unavailable")
+    workspace.write_json(workspace.findings_path("Access", "inventory.json"), access_records)
+    workspace.write_json(workspace.findings_path("Access", "findings.json"), [])
+    workspace.write_text(workspace.module_dir("Access") / "findings.txt", "")
     console.activity("Analyzing trust relationships...")
     trust_context = normalize_trust_context(collector.raw.get("trusts", []))
     workspace.write_json(workspace.findings_path("Trusts", "inventory.json"), trust_context)
@@ -1062,7 +1089,8 @@ def main():
     workspace.write_text(workspace.root / "summary.txt", summary)
     report_text = _results_text(root, target, external_results, inventory, cas, templates, all_findings,
                                 workspace, corroborated=len(statuses), disagreements=len(disagreements),
-                                smb_shares=share_inventory, services=service_inventory)
+                                smb_shares=share_inventory, services=service_inventory,
+                                access_records=access_records)
     workspace.write_text_atomic(workspace.root / "results.txt", report_text)
     # Keep a non-destructive historical copy for this scan ID.
     workspace.write_json(workspace.history_root / "scan.json", {"domain": root, "target": target,
@@ -1090,6 +1118,7 @@ def main():
                 "credentials": discovered_credentials,
                 "smb_shares": share_inventory,
                 "services": service_inventory,
+                "access": access_records,
                 "sccm": {key: sccm_result.get(key, []) for key in
                           ("site_code", "management_points", "distribution_points", "site_servers",
                            "sms_providers", "sql_servers", "sup_wsus", "pxe", "status")},
@@ -1156,6 +1185,12 @@ def main():
         console.line()
         console.heading("Service Exposure")
         for line in service_lines:
+            console.line(line)
+    access_lines = _access_summary_lines(access_records)
+    if access_lines:
+        console.line()
+        console.heading("Authenticated Access")
+        for line in access_lines:
             console.line(line)
     console.line()
     console.heading("Findings")

@@ -99,14 +99,22 @@ def render_html(model):
                        if x.get("reachable") or x.get("state") == "OPEN")
         if rows:
             service_section = '<section id="services"><h2>Service Exposure</h2><div class="table-wrap"><table><thead><tr><th>Host</th><th>Service</th><th>Port</th><th>TCP</th><th>Protocol</th></tr></thead><tbody>' + rows + '</tbody></table></div></section>'
+    access = model.get("access", []) or []
+    access_section = ""
+    if access:
+        rows = "".join(f"<tr><td>{_e(x.get('host', ''))}</td><td>{_e(', '.join(x.get('roles', [])))}</td>"
+                       f"<td>{_e(x.get('protocol', ''))}</td><td>{_e(x.get('authentication', 'UNKNOWN'))}</td>"
+                       f"<td>{_e(x.get('privilege', 'UNKNOWN'))}</td><td>{_e(x.get('principal', ''))}</td>"
+                       f"<td>{_e(x.get('source', ''))}</td></tr>" for x in access)
+        access_section = '<section id="access"><h2>Authenticated Access</h2><div class="table-wrap"><table><thead><tr><th>Host</th><th>Roles</th><th>Protocol</th><th>Authentication</th><th>Privilege</th><th>Principal</th><th>Source</th></tr></thead><tbody>' + rows + '</tbody></table></div></section>'
     sccm = model.get("sccm") or {}
     sccm_section = ""
     if sccm:
         sccm_section = f'<section id="sccm"><h2>SCCM / MECM</h2><pre>{_json(sccm)}</pre></section>'
     nav_items = [("Overview", "overview"), ("Inventory", "inventory"), ("Findings", "findings"),
-                 ("SMB Shares", "smb-shares"), ("Services", "services"), ("Credentials", "credentials"), ("SCCM", "sccm"), ("Coverage", "coverage")]
+                 ("SMB Shares", "smb-shares"), ("Services", "services"), ("Authenticated Access", "access"), ("Credentials", "credentials"), ("SCCM", "sccm"), ("Coverage", "coverage")]
     nav = "".join(f'<a href="#{anchor}">{label}</a>' for label, anchor in nav_items
-                   if anchor in {"overview", "inventory", "findings", "coverage"} or (anchor == "smb-shares" and shares) or (anchor == "services" and services) or (anchor == "credentials" and credentials) or (anchor == "sccm" and sccm))
+                   if anchor in {"overview", "inventory", "findings", "coverage"} or (anchor == "smb-shares" and shares) or (anchor == "services" and services) or (anchor == "access" and access) or (anchor == "credentials" and credentials) or (anchor == "sccm" and sccm))
     banner = model.get("banner", "AD-Enum")
     return f'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -121,7 +129,7 @@ header pre {{ color:var(--accent); white-space:pre-wrap; overflow-wrap:anywhere;
 <nav>{nav}</nav><main><section id="overview"><h2>Overview</h2><div class="panel"><dl><dt>Domain</dt><dd>{_e(model.get("domain"))}</dd><dt>Target</dt><dd>{_e(model.get("target"))}</dd><dt>Workspace</dt><dd>{_e(model.get("workspace"))}</dd></dl></div></section>
 <section id="inventory"><h2>Inventory</h2><div class="metrics">{inventory}</div><div class="panel"><h3>Collectors</h3><table><tbody>{collectors}</tbody></table></div></section>
 <section id="findings"><h2>Findings</h2>{"".join(finding_sections) or '<div class="panel">No active findings.</div>'}</section>
-{share_section}{service_section}{credential_section}{sccm_section}<section id="coverage"><h2>Coverage</h2><div class="table-wrap"><table><thead><tr><th>Capability</th><th>Status</th><th>Detail</th></tr></thead><tbody>{coverage}</tbody></table></div></section>
+{share_section}{service_section}{access_section}{credential_section}{sccm_section}<section id="coverage"><h2>Coverage</h2><div class="table-wrap"><table><thead><tr><th>Capability</th><th>Status</th><th>Detail</th></tr></thead><tbody>{coverage}</tbody></table></div></section>
 </main></body></html>'''
 
 
