@@ -289,15 +289,15 @@ def main():
                          {"gpo_acls": gpo_acls, "high_value_acls": high_value_acls})
     acl_findings = []
     for observation in gpo_acl_observations + high_value_acl_observations:
-        target = observation["target"]
+        acl_target = observation["target"]
         rights = ", ".join(observation["effective_rights"])
         is_gpo = observation in gpo_acl_observations
         category, rule = ("GPO", "gpo-modify") if is_gpo else ("ACL", "high-value-right")
-        title = (f"Low-privilege principal can modify GPO — {target}" if is_gpo
-                 else f"Low-privilege principal has dangerous rights — {target}")
+        title = (f"Low-privilege principal can modify GPO — {acl_target}" if is_gpo
+                 else f"Low-privilege principal has dangerous rights — {acl_target}")
         acl_findings.append(NormalizedFinding(
-            finding_id=f"{category.lower()}:{rule}:{target}:{observation['principal_sid']}",
-            category=category, rule=rule, title=title, affected_object=target,
+            finding_id=f"{category.lower()}:{rule}:{acl_target}:{observation['principal_sid']}",
+            category=category, rule=rule, title=title, affected_object=acl_target,
             domain=workspace.domain,
             sources=[{"source": "native-ldap", "observed": True}],
             evidence={"principal_sid": observation["principal_sid"], "effective_rights": rights,
