@@ -1,0 +1,30 @@
+{
+  "fixture": "SCCM.LAB account-detector live observations",
+  "sanitized": true,
+  "objects": [
+    {
+      "sAMAccountName": "adenum-asrep-test",
+      "distinguishedName": "CN=adenum-asrep-test,OU=ADEnum-Lab,DC=sccm,DC=lab",
+      "userAccountControl": 4260352,
+      "flags": ["ACCOUNTDISABLE=false", "DONT_REQ_PREAUTH=true"]
+    },
+    {
+      "sAMAccountName": "adenum-pwdnr",
+      "distinguishedName": "CN=adenum-pwdnr,OU=ADEnum-Lab,DC=sccm,DC=lab",
+      "userAccountControl": 66080,
+      "flags": ["ACCOUNTDISABLE=false", "PASSWD_NOTREQD=true"]
+    },
+    {
+      "sAMAccountName": "adenum-krbtest",
+      "distinguishedName": "CN=adenum-krbtest,OU=ADEnum-Lab,DC=sccm,DC=lab",
+      "userAccountControl": 66048,
+      "servicePrincipalName": ["adenum-test/svc.sccm.lab:4242"],
+      "flags": ["ACCOUNTDISABLE=false"]
+    }
+  ],
+  "negative_mutations": {
+    "asrep": "clear 0x400000 DONT_REQ_PREAUTH bit",
+    "passwd_not_required": "clear 0x20 PASSWD_NOTREQD bit",
+    "kerberoast": "remove the servicePrincipalName value"
+  }
+}

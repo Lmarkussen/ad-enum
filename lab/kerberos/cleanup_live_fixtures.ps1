@@ -2,7 +2,7 @@
 [CmdletBinding(SupportsShouldProcess)]
 param()
 Import-Module ActiveDirectory
-foreach ($name in @('adenum-asrep-test','adenum-passwdnotreqd-test','adenum-kerberoast-test','adenum-unconstrained-test','adenum-constrained-test')) {
+foreach ($name in @('adenum-asrep-test','adenum-pwdnr','adenum-krbtest','adenum-unconst','adenum-const')) {
   Remove-ADUser -Identity $name -Confirm:$false -ErrorAction SilentlyContinue
 }
 Remove-ADComputer -Identity 'ADENUM-RBCD-SOURCE' -Confirm:$false -ErrorAction SilentlyContinue

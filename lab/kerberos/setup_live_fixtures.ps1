@@ -9,7 +9,10 @@ param(
 
 Import-Module ActiveDirectory
 $secure = ConvertTo-SecureString $FixturePassword -AsPlainText -Force
-$ou = "CN=Users,$((Get-ADDomain).DistinguishedName)"
+$ou = "OU=ADEnum-Lab,$((Get-ADDomain).DistinguishedName)"
+if (-not (Get-ADOrganizationalUnit -Identity $ou -ErrorAction SilentlyContinue)) {
+  New-ADOrganizationalUnit -Name 'ADEnum-Lab' -Path (Get-ADDomain).DistinguishedName
+}
 function Ensure-User($name, $uac, $spn = $null) {
   $u = Get-ADUser -Identity $name -ErrorAction SilentlyContinue
   if (-not $u) { New-ADUser -Name $name -SamAccountName $name -Path $ou -AccountPassword $secure -Enabled $true }
@@ -19,11 +22,11 @@ function Ensure-User($name, $uac, $spn = $null) {
 
 # 512 normal enabled user; add only the one detector-specific bit.
 Ensure-User 'adenum-asrep-test' (0x200 + 0x400000)
-Ensure-User 'adenum-passwdnotreqd-test' (0x200 + 0x20)
-Ensure-User 'adenum-kerberoast-test' 0x200 "MSSQLSvc/adenum-kerberoast-test.${DnsSuffix}:1433"
-Ensure-User 'adenum-unconstrained-test' (0x200 + 0x80000) "HOST/adenum-unconstrained-test.$DnsSuffix"
-Ensure-User 'adenum-constrained-test' 0x200 "HOST/adenum-constrained-test.$DnsSuffix"
-Set-ADUser 'adenum-constrained-test' -Add @{'msDS-AllowedToDelegateTo'="HOST/$DnsSuffix"}
+Ensure-User 'adenum-pwdnr' (0x200 + 0x20)
+Ensure-User 'adenum-krbtest' 0x200 "MSSQLSvc/adenum-krbtest.${DnsSuffix}:1433"
+Ensure-User 'adenum-unconst' (0x200 + 0x80000) "HOST/adenum-unconst.$DnsSuffix"
+Ensure-User 'adenum-const' 0x200 "HOST/adenum-const.$DnsSuffix"
+Set-ADUser 'adenum-const' -Add @{'msDS-AllowedToDelegateTo'="HOST/$DnsSuffix"}
 
 # RBCD uses an ordinary computer source and the existing CLIENT target.
 $source = Get-ADComputer 'ADENUM-RBCD-SOURCE' -ErrorAction SilentlyContinue
