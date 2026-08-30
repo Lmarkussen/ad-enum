@@ -13,7 +13,7 @@ from .core.planner import ExecutionPlanner
 from .core.findings import NormalizedFinding
 from .external import execute_external
 from .inventory import native_inventory, DomainInventory, build_targets, sensitive_description, parse_netexec_smb
-from .sccm import discover as discover_sccm, normalize_relayking
+from .sccm import discover as discover_sccm, normalize_relayking, probe_management_points
 from .kerberos import roastable
 from .delegation import enumerate_delegation, enumerate_gmsa
 from .core.console import Console
@@ -174,6 +174,16 @@ def main():
             for host in result_obj["hosts"]:
                 inventory.add("observed_hosts", f"{host.get('ip')}:{host.get('host', host.get('name', ''))}", host, "netexec")
     sccm_result = discover_sccm(inventory, collector.raw)
+    sccm_result["endpoint_probes"] = probe_management_points(sccm_result.get("management_points", []), a.timeout)
+    for mp in sccm_result.get("management_points", []):
+        probes = [x for x in sccm_result["endpoint_probes"] if x["host"].lower() == mp["host"].lower()]
+        confirmed = [x for x in probes if x.get("sccm_marker")]
+        if confirmed:
+            mp["protocol"] = confirmed[0]["scheme"]
+            mp["port"] = confirmed[0]["port"]
+            mp["endpoint_evidence"] = [{"scheme": x["scheme"], "path": x["path"],
+                                         "http_status": x.get("http_status"), "metadata": x.get("metadata", {})}
+                                        for x in confirmed]
     workspace.write_json(workspace.findings_path("SCCM", "inventory.json"), sccm_result)
     workspace.write_json(workspace.findings_path("SCCM", "topology.json"), sccm_result)
     workspace.write_json(workspace.raw_dir("SCCM") / "ldap-publication.json", collector.raw.get("sccm", []))

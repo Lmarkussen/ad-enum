@@ -53,6 +53,23 @@ def test_sccm_publication_dedupes_endpoint_records():
     assert len(result["endpoints"]) == 1
 
 
+def test_sccm_mp_probe_parses_metadata_without_retaining_key_material(monkeypatch):
+    from ad_enum.sccm import probe_management_points
+
+    class Response:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def read(self, limit):
+            return b'<MPList><MP Name="MECM.SCCM.LAB" FQDN="MECM.sccm.lab"><Version>9128</Version></MP></MPList>'
+
+    monkeypatch.setattr("ad_enum.sccm.urllib.request.urlopen", lambda request, timeout: Response())
+    result = probe_management_points([{"host": "MECM.sccm.lab", "fqdn": "MECM.sccm.lab"}], 1)
+    assert result[0]["status"] == "CONFIRMED"
+    assert result[0]["metadata"]["fqdn"] == "MECM.sccm.lab"
+    assert "body" not in result[0]
+
+
 def test_relayking_paths_are_normalized_without_action_fields():
     result = normalize_relayking({"statistics": {"relayable_hosts": 1}, "relay_paths": [
         {"source_host": "MECM", "dest_host": "DC", "dest_protocol": "ldap",

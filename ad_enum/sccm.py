@@ -1,5 +1,8 @@
 """Read-only SCCM/MECM infrastructure inventory and correlation."""
 import re
+import urllib.error
+import urllib.request
+import xml.etree.ElementTree as ET
 
 
 def _values(attrs, key):
@@ -105,14 +108,66 @@ def discover(inventory, raw=None):
                 host.setdefault("sccm_evidence", []).append(endpoint)
                 host["role"] = "confirmed-sccm-published-host"
                 host["confidence"] = "sccm-publication"
+    pxe = {"status": "UNKNOWN", "implementation": "unknown", "evidence": []}
+    for item in publication["objects"]:
+        attrs = {str(k).lower(): v for k, v in item.get("raw", {}).items()}
+        netboot = [v for key in ("netbootscpbl", "netbootanswer", "netbootscp")
+                   for v in _values(attrs, key) if v not in (None, "", [])]
+        if netboot:
+            pxe = {"status": "ENABLED", "implementation": "unknown",
+                   "evidence": [{"dn": item["dn"], "attributes": ["netbootSCPBL", "netbootAnswer", "netbootSCP"]}]}
+            break
     return {"hosts": hosts, "relationships": relationships, "spn_accounts": spn_accounts,
             "publication": publication,
             "site_code": site_code, "site_code_sources": [x["dn"] for x in publication["objects"]
                             if site_code and site_code in x["site_codes"]],
             "management_points": management_points, "distribution_points": [],
             "site_servers": [], "sms_providers": [], "sql_servers": [x for x in hosts if x["role"] == "sql-candidate"],
-            "pxe": {"status": "UNKNOWN", "evidence": []},
+            "pxe": pxe,
             "sup_wsus": [], "status": "sccm-publication-and-inventory"}
+
+
+def probe_management_points(management_points, timeout=5):
+    """Probe only the two documented, read-only MP metadata endpoints.
+
+    The response is parsed into bounded metadata; certificate/key material in
+    MPKEYINFORMATION is deliberately never retained.
+    """
+    results = []
+    paths = ("/SMS_MP/.sms_aut?MPLIST", "/SMS_MP/.sms_aut?MPKEYINFORMATION")
+    for mp in management_points or []:
+        host = mp.get("fqdn") or mp.get("host")
+        if not host:
+            continue
+        for scheme in ("http", "https"):
+            for path in paths:
+                item = {"host": host, "scheme": scheme, "port": 443 if scheme == "https" else 80,
+                        "path": path, "status": "FAILED", "sccm_marker": False}
+                try:
+                    request = urllib.request.Request(f"{scheme}://{host}{path}",
+                                                     headers={"User-Agent": "AD-Enum/1 SCCM inventory"})
+                    with urllib.request.urlopen(request, timeout=timeout) as response:
+                        body = response.read(16384)
+                        item["http_status"] = response.status
+                        root = ET.fromstring(body)
+                        root_name = root.tag.rsplit("}", 1)[-1].upper()
+                        item["sccm_marker"] = root_name in {"MPLIST", "MPKEYINFORMATION"}
+                        item["status"] = "CONFIRMED" if item["sccm_marker"] else "RESPONDED"
+                        if root_name == "MPLIST":
+                            mp_node = next((x for x in root.iter() if x.tag.rsplit("}", 1)[-1].upper() == "MP"), None)
+                            if mp_node is not None:
+                                item["metadata"] = {key.lower(): value for key, value in mp_node.attrib.items()
+                                                     if key.lower() in {"name", "fqdn", "version"}}
+                                item["ssl_state"] = next((x.attrib.get("Value") for x in root.iter()
+                                                           if x.attrib.get("Name") == "SSLState"), None)
+                        elif root_name == "MPKEYINFORMATION":
+                            item["metadata"] = {name: next((x.text for x in root.iter()
+                                                             if x.tag.rsplit("}", 1)[-1].upper() == name), None)
+                                                 for name in ("SITECODE", "ASSIGNMENTSITECODE", "MACHINENAME", "FQDN")}
+                except (urllib.error.URLError, TimeoutError, OSError, ET.ParseError) as exc:
+                    item["error"] = type(exc).__name__
+                results.append(item)
+    return results
 
 
 def normalize_relayking(data):
