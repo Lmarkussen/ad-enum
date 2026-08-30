@@ -86,13 +86,15 @@ def main():
     context = ScanContext(workspace.domain, target, AuthContext(a.username, a.password, bind_domain),
                           workspace, timeout=a.timeout, scan_id=workspace.scan_id,
                           ldaps=a.ldaps, force_kerb=a.force_kerb,
-                          auto_config={"requested": a.auto_config})
+                          auto_config={"requested": a.auto_config},
+                          kerberos_session=collector.kerberos_session)
     if a.auto_config:
         context.auto_config = inspect_autoconfig(a.dc or target, workspace.domain)
         context.dc_hostname = context.auto_config.get("dc_hostname", "")
         if a.verbose: console.debug_line(f"auto-config: {context.auto_config}")
     # Native LDAP is the discovery prerequisite for the multi-host plan.
     root, cas, templates = collector.collect()
+    context.kerberos_session = collector.kerberos_session
     inventory = native_inventory(collector.raw)
     native_counts = inventory.counts()
     context.targets = build_targets(inventory)
@@ -392,4 +394,6 @@ def main():
     console.line()
     console.heading("Workspace")
     console.line(console.paint(f"  tool/{workspace.domain}/", "dim"))
+    if collector.kerberos_session:
+        collector.kerberos_session.close()
     return 0

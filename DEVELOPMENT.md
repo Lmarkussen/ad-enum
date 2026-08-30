@@ -176,3 +176,18 @@ recorded. Attempts to create the five named fixture users through that
 bootstrap account returned `NT_STATUS_ACCESS_DENIED`, so no AS-REP,
 PASSWD_NOTREQD, Kerberos, or delegation fixture was created and no unrelated
 account was modified.
+
+Directory evidence confirms `localuser` is a member of `BUILTIN\\Administrators`
+and not Domain Admins or Enterprise Admins.  `snablr-lab-admin` is a member of
+Enterprise Admins.  The fixture attempts that returned `NT_STATUS_ACCESS_DENIED`
+used NetExec/rpcclient SAMR-style creation, not an LDAP or Active Directory
+PowerShell provisioning operation.  A DC-local administrator is therefore
+not equivalent to a domain administrator for this operation; future fixture
+setup must use a fresh authenticated Enterprise Admin LDAP/AD session.
+
+The scan console now has centralized color/status rendering and suppresses
+per-object corroboration in normal mode.  Forced-Kerberos native LDAP creates
+one `KerberosSession` whose restricted temporary ccache/config are inherited
+by compatible subprocess adapters and cleaned on process exit or explicit
+scan completion.  Certipy 5.1.0 requires `-k -no-pass -target` and remains
+blocked by the lab's six-hour clock skew; NetExec now reuses the shared cache.

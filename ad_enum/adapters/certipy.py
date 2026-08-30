@@ -8,6 +8,7 @@ import os
 import subprocess
 import tempfile
 import shutil
+import socket
 from dataclasses import dataclass, field
 from pathlib import Path
 from ..core.provenance import Provenance
@@ -108,10 +109,11 @@ class CertipyAdapter(ToolAdapter):
             if executable == "certipy":
                 executable = shutil.which("certipy") or shutil.which("certipy-ad") or executable
             cmd = [executable, "find", "-u", account, "-json", "-output", prefix]
-            if force_kerb: cmd.append("-k")
+            if force_kerb:
+                cmd += ["-k", "-no-pass", "-target", socket.getfqdn(dc_ip or domain)]
             cmd += ["-ldap-scheme", "ldaps" if ldaps else "ldap",
                     "-ldap-port", "636" if ldaps else "389"]
-            if password is not None: cmd += ["-p", password]
+            if password is not None and not force_kerb: cmd += ["-p", password]
             if dc_ip: cmd += ["-dc-ip", dc_ip]
             cmd += list(extra_args)
             proc = subprocess.run(cmd, text=True, capture_output=True, check=False, cwd=td, timeout=timeout)
