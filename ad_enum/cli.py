@@ -664,6 +664,8 @@ def main():
             if source_dir.exists():
                 shutil.copytree(source_dir, workspace.history_module_dir(item.spec.outputs[0]),
                                 dirs_exist_ok=True)
+    console.activity("Correlating findings...")
+    console.complete("Analysis complete")
     console.line()
     console.heading("Target")
     console.line(f"  Domain ............. {root}")
