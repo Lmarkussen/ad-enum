@@ -20,7 +20,7 @@ class BloodHoundAdapter(ToolAdapter):
                                      output_dir=raw)
         if context.force_kerb: command.append("-k")
         if context.ldaps: command.append("--use-ldaps")
-        proc = self.execute(command, timeout=context.timeout, secrets=(context.auth.password,))
+        proc = self.execute(command, timeout=context.timeout, secrets=(context.auth.password,), stream=context.tool_output_callback)
         context.workspace.write_text(raw / "stdout.txt", self.redact_text(proc.stdout, (context.auth.password,)))
         context.workspace.write_text(raw / "stderr.txt", self.redact_text(proc.stderr, (context.auth.password,)))
         return {"source": self.source_name, "returncode": proc.returncode,

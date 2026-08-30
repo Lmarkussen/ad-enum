@@ -34,7 +34,7 @@ python3 ad-enum.py -u localuser -p 'password' \
   -domain sccm.lab -dc-ip 10.1.10.40
 ```
 
-Useful options include `--verbose`, `--debug`, `--no-color`, `--ldaps`,
+Useful options include `--verbose`, `--debug`, `--tool-output`, `--no-color`, `--ldaps`,
 `--force-kerb`, `--sync-time`, `--modules`, and `--timeout`. Passing a
 password on a command line can expose it through shell history or process
 inspection; omit `-p` to use the supported interactive prompt.

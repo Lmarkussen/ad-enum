@@ -24,6 +24,7 @@ from .posture import (normalize_smb, normalize_trusts, normalize_gpo_acls, norma
 from .kerberos import roastable, account_exposure, privileged_account_sids, account_security_context
 from .delegation import enumerate_delegation, enumerate_gmsa
 from .core.console import Console
+from .anonymous import probe_anonymous_ldap, probe_anonymous_smb
 
 
 CATEGORY_ORDER = ("ADCS", "POLICY", "KERBEROS", "ACCOUNT", "DELEGATION",
@@ -139,6 +140,8 @@ def main():
     p.add_argument("--auto-config", action="store_true"); p.add_argument("--sync-time", action="store_true")
     p.add_argument("--verbose", "--debug", action="store_true")
     p.add_argument("--no-color", action="store_true")
+    p.add_argument("--tool-output", action="store_true",
+                   help="stream external collector output live (verbose; final report still rendered)")
     p.add_argument("--timeout", type=float, default=10)
     p.add_argument("--modules", default="all", help="comma-separated modules (default: all read-only collectors)")
     p.add_argument("--profile", default="default")
@@ -178,6 +181,11 @@ def main():
             console.line("  Re-run with --sync-time.")
     collector = Collector(target, a.username, a.password, bind_domain, a.ldaps, a.port,
                           timeout=a.timeout, force_kerb=a.force_kerb)
+    # Keep this probe independent of the authenticated collection outcome.
+    # It is still bounded to the requested DC and never uses the scan secret.
+    console.activity("Checking anonymous LDAP posture...")
+    anonymous_ldap = probe_anonymous_ldap(target, a.domain, timeout=min(a.timeout, 5))
+    console.complete("Anonymous LDAP posture complete", "WARNING" if anonymous_ldap.get("error") else "PASS")
     try:
         console.activity("Resolving target...")
         root, _ = collector.preflight()
@@ -217,6 +225,7 @@ def main():
     context = ScanContext(workspace.domain, target, AuthContext(a.username, a.password, bind_domain),
                           workspace, timeout=a.timeout, scan_id=workspace.scan_id,
                           ldaps=a.ldaps, force_kerb=a.force_kerb,
+                          tool_output=a.tool_output,
                           auto_config={"requested": a.auto_config},
                           kerberos_session=collector.kerberos_session)
     if a.auto_config or a.sync_time:
@@ -231,8 +240,9 @@ def main():
     inventory = native_inventory(collector.raw)
     native_counts = inventory.counts()
     context.targets = build_targets(inventory)
-    def report_progress(stage, label, state=None):
+    def report_progress(stage, label, state=None, line=None):
         if stage == "start": console.activity(f"Running {label}...")
+        elif stage == "tool": console.line(console.paint(f"[{label}{':stderr' if state == 'stderr' else ''}] {line.rstrip()}" , "dim" if state == "stderr" else None))
         elif state == "PASS": console.complete(f"{label} complete")
         elif state in {"FAILED", "PARTIAL"}: console.complete(f"{label} failed — continuing", "WARNING")
         else: console.complete(f"{label} unavailable — skipped", "SKIPPED")
@@ -277,6 +287,33 @@ def main():
     coverage.add("Password policies / FGPP", "PASS", f"{len(collector.raw.get('password_settings', []))} PSO(s)")
     console.activity("Checking LDAP security...")
     smb_inventory, smb_findings = [], []
+    console.activity("Checking anonymous SMB posture...")
+    anonymous_smb = []
+    seen_anon_hosts = set()
+    for host_record in inventory.records.get("observed_hosts", {}).values():
+        attrs = host_record.attributes
+        host = attrs.get("host") or attrs.get("hostname") or attrs.get("name") or host_record.identifier
+        ip = attrs.get("ip") or ""
+        if host and str(host).lower() not in seen_anon_hosts:
+            seen_anon_hosts.add(str(host).lower())
+            anonymous_smb.append(probe_anonymous_smb(host, ip, timeout=min(a.timeout, 5)))
+    if target not in seen_anon_hosts:
+        anonymous_smb.append(probe_anonymous_smb(target, a.dc, timeout=min(a.timeout, 5)))
+    anonymous_smb_findings = []
+    for posture in anonymous_smb:
+        if posture.get("share_enumeration") == "SHARE_ENUM_ALLOWED" and posture.get("shares"):
+            anonymous_smb_findings.append(NormalizedFinding(
+                finding_id=f"smb:anonymous-shares:{posture.get('host')}", category="SMB",
+                rule="anonymous-share-enumeration",
+                title=f"Anonymous share enumeration allowed — {posture.get('host')}",
+                affected_object=posture.get("host"), domain=workspace.domain,
+                sources=[{"source": source, "observed": True} for source in posture.get("sources", [])],
+                evidence={"shares": posture.get("shares", []), "impact": "Unauthenticated users can enumerate SMB shares"},
+                status="single-source", priority="medium", workspace_artifacts=["SMB/anonymous.json"],
+                first_seen_scan=workspace.scan_id, current_scan=workspace.scan_id).as_dict())
+    workspace.write_json(workspace.findings_path("SMB", "anonymous.json"), anonymous_smb)
+    console.complete("Anonymous SMB posture complete",
+                    "WARNING" if any(x.get("error") for x in anonymous_smb) else "PASS")
     trust_inventory = normalize_trusts(collector.raw.get("trusts", []))
     workspace.write_json(workspace.findings_path("Trusts", "inventory.json"), trust_inventory)
     workspace.write_json(workspace.findings_path("Trusts", "findings.json"), [])
@@ -286,6 +323,17 @@ def main():
                      "channel_binding": {"state": "UNKNOWN", "evidence": [],
                                           "reason": "LDAPS channel binding cannot be assessed without a valid TLS service"}}
     ldap_security_findings = []
+    if anonymous_ldap.get("domain_data") == "READABLE":
+        ldap_security_findings.append(NormalizedFinding(
+            finding_id="ldap:anonymous-directory-enumeration", category="LDAP",
+            rule="anonymous-directory-enumeration",
+            title=f"Anonymous directory enumeration allowed — {context.dc_hostname or target}",
+            affected_object=context.dc_hostname or target, domain=workspace.domain,
+            sources=[{"source": source, "observed": True} for source in anonymous_ldap.get("sources", [])],
+            evidence={"posture": anonymous_ldap, "impact": "Unauthenticated users can enumerate Active Directory information"},
+            status="single-source", priority="high", workspace_artifacts=["LDAPSecurity/anonymous.json"],
+            first_seen_scan=workspace.scan_id, current_scan=workspace.scan_id).as_dict())
+    workspace.write_json(workspace.findings_path("LDAPSecurity", "anonymous.json"), anonymous_ldap)
     # A successful authenticated NTLM bind over plain LDAP is a direct,
     # read-only observation that the DC accepts an unsigned bind.  Do not
     # infer this from RelayKing, and do not claim a result for Kerberos SASL
@@ -308,6 +356,19 @@ def main():
                          ("\n" if ldap_security_findings else ""))
     console.complete("LDAP security analysis complete")
     findings, comparisons, coverage, dangling, duplicates = scan(cas, templates, certipy=certipy)
+    coverage.add("LDAP / anonymous posture", "PARTIAL" if anonymous_ldap.get("error") else "PASS",
+                 f"bind={anonymous_ldap.get('bind')}, domain-data={anonymous_ldap.get('domain_data')}")
+    coverage.add("SMB / anonymous posture", "PARTIAL" if any(x.get("error") for x in anonymous_smb) else "PASS",
+                 f"{len(anonymous_smb)} host(s) bounded")
+    coverage.add("SCCM / infrastructure discovery", "PASS", f"{len(sccm_result['hosts'])} candidate host(s)")
+    # Keep SCCM coverage granular: the aggregate line describes the
+    # discovery family only and must not imply that every role is observable.
+    coverage.add("SCCM / topology", "PASS", "normalized site and role candidates")
+    coverage.add("SCCM / management point", "PASS" if sccm_result.get("management_points") else "PARTIAL",
+                 f"{len(sccm_result.get('management_points', []))} candidate(s)")
+    for capability in ("distribution point", "PXE / WDS", "boot metadata", "task-sequence metadata",
+                       "SQL association", "SUP / WSUS", "SCCM ACL", "DP content metadata"):
+        coverage.add(f"SCCM / {capability}", "NOT TESTED", "requires live role evidence")
     exposures = roastable(inventory)
     delegation_records = enumerate_delegation(inventory)
     gmsa_records = enumerate_gmsa(inventory)
@@ -447,9 +508,12 @@ def main():
                 evidence={"share": share, "impact": "Low-privileged users can modify share content"},
                 status="single-source", priority="medium", workspace_artifacts=["SMB/shares.json"],
                 first_seen_scan=workspace.scan_id, current_scan=workspace.scan_id).as_dict())
+    smb_findings.extend(anonymous_smb_findings)
     workspace.write_json(workspace.findings_path("SMB", "findings.json"), smb_findings)
     workspace.write_text(workspace.module_dir("SMB") / "findings.txt", "\n".join(f"[{x['category']}] {x['title']}" for x in smb_findings) + ("\n" if smb_findings else ""))
     coverage.add("SMB / share inventory", "PASS" if share_inventory else "PARTIAL", f"{len(share_inventory)} share(s)")
+    coverage.add("SMB / anonymous posture", "PARTIAL" if any(x.get("error") for x in anonymous_smb) else "PASS",
+                 f"{len(anonymous_smb)} host(s) bounded")
     console.complete("SMB share enumeration complete", "PASS" if share_inventory else "WARNING")
     console.activity("Enumerating SCCM...")
     sccm_result = discover_sccm(inventory, collector.raw, dns_map)
@@ -468,7 +532,6 @@ def main():
     workspace.write_json(workspace.raw_dir("SCCM") / "ldap-publication.json", collector.raw.get("sccm", []))
     workspace.write_json(workspace.findings_path("SCCM", "endpoints.json"), sccm_result.get("endpoint_probes", []))
     workspace.write_json(workspace.findings_path("SCCM", "pxe.json"), sccm_result.get("pxe", {}))
-    coverage.add("SCCM / infrastructure discovery", "PASS", f"{len(sccm_result['hosts'])} candidate host(s)")
     console.complete("SCCM analysis complete")
     expected_acl_principals = {
         str(record.identifier) for record in inventory.records.get("users", {}).values()
@@ -804,7 +867,7 @@ def main():
     all_findings = (finding_records + policy_findings + description_findings + ldap_secret_findings + active_kerberos_findings +
                     domain_security_findings +
                     delegation_findings + relay_findings + smb_findings + acl_findings +
-                    ldap_security_findings + [x["normalized"] for x in gpo_findings])
+                    ldap_security_findings + anonymous_smb_findings + [x["normalized"] for x in gpo_findings])
     workspace.write_json(workspace.findings_path("vulnerabilities", "findings.json"), all_findings)
     workspace.write_text(workspace.findings_path("vulnerabilities", "findings.txt"),
                           "\n".join(f"[{x['category']}] {x['title']}" for x in all_findings) + "\n")

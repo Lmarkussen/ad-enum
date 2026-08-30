@@ -92,7 +92,7 @@ class CertipyAdapter(ToolAdapter):
                                Provenance(self.source_name, "find -json", detail), raw_data=data)
 
     def run(self, *, domain, username, password=None, dc_ip=None, executable="certipy",
-            extra_args=(), workspace=None, timeout=60, ldaps=False, force_kerb=False):
+            extra_args=(), workspace=None, timeout=60, ldaps=False, force_kerb=False, stream=None):
         """Run `certipy find -json` and parse its generated JSON.
 
         Password is passed via the process argument only when supplied by the
@@ -116,7 +116,7 @@ class CertipyAdapter(ToolAdapter):
             if password is not None and not force_kerb: cmd += ["-p", password]
             if dc_ip: cmd += ["-dc-ip", dc_ip]
             cmd += list(extra_args)
-            proc = subprocess.run(cmd, text=True, capture_output=True, check=False, cwd=td, timeout=timeout)
+            proc = self.execute(cmd, cwd=td, timeout=timeout, secrets=((password,) if password else ()), stream=stream)
             candidates = [Path(f"{prefix}_Certipy.json"), Path(td) / f"_tmp_{Path(prefix).name}_Certipy.json"]
             candidates.extend(Path(td).rglob("*Certipy.json"))
             candidates.extend(Path(td).parent.glob("*Certipy.json"))

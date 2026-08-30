@@ -1,6 +1,9 @@
 from dataclasses import dataclass
 import shutil
 import subprocess
+import threading
+import queue
+import time
 from pathlib import Path
 
 @dataclass
@@ -44,16 +47,46 @@ class ToolAdapter:
             if secret: text = text.replace(secret, "<redacted>")
         return text
 
-    def execute(self, command, *, cwd=None, timeout=30, secrets=()):
+    def execute(self, command, *, cwd=None, timeout=30, secrets=(), stream=None):
         command = list(command)
         resolved = self.resolve_executable()
         if resolved and command and command[0] == self.executable:
             command[0] = resolved
         try:
-            proc = subprocess.run(command, cwd=cwd, capture_output=True, text=True,
-                                  timeout=timeout, check=False)
-        except subprocess.TimeoutExpired as exc:
-            raise TimeoutError(f"{self.source_name} timed out after {timeout}s") from exc
-        if proc.returncode:
-            raise RuntimeError(f"{self.source_name} exited {proc.returncode}: {proc.stderr[-500:]}")
-        return proc
+            proc = subprocess.Popen(command, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    text=True, bufsize=1)
+        except OSError:
+            raise
+        captured = {"stdout": [], "stderr": []}
+        events = queue.Queue()
+
+        def drain(name, pipe):
+            try:
+                for line in iter(pipe.readline, ""):
+                    events.put((name, line))
+            finally:
+                pipe.close()
+
+        threads = [threading.Thread(target=drain, args=(name, getattr(proc, name)), daemon=True)
+                   for name in ("stdout", "stderr")]
+        for thread in threads:
+            thread.start()
+        deadline = time.monotonic() + timeout
+        while any(thread.is_alive() for thread in threads) or proc.poll() is None or not events.empty():
+            try:
+                name, line = events.get(timeout=0.05)
+                captured[name].append(line)
+                if stream:
+                    stream(name, self.redact_text(line, secrets))
+            except queue.Empty:
+                pass
+            if proc.poll() is None and time.monotonic() > deadline:
+                proc.kill()
+                for thread in threads: thread.join(timeout=1)
+                raise TimeoutError(f"{self.source_name} timed out after {timeout}s")
+        for thread in threads: thread.join(timeout=1)
+        result = subprocess.CompletedProcess(command, proc.returncode,
+                                             "".join(captured["stdout"]), "".join(captured["stderr"]))
+        if result.returncode:
+            raise RuntimeError(f"{self.source_name} exited {result.returncode}: {result.stderr[-500:]}")
+        return result

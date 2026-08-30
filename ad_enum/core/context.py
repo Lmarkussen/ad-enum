@@ -26,11 +26,14 @@ class ScanContext:
     dc_hostname: str = ""
     auto_config: dict = field(default_factory=dict)
     kerberos_session: object = field(default=None, repr=False)
+    tool_output: bool = False
+    tool_output_callback: object = field(default=None, repr=False)
 
     def redacted(self):
         return {"domain": self.domain, "dc_ip": self.dc_ip, "auth": self.auth.redacted(),
                 "timeout": self.timeout, "scan_id": self.scan_id,
                 "ldaps": self.ldaps, "force_kerb": self.force_kerb,
+                "tool_output": self.tool_output,
                 "dc_hostname": self.dc_hostname, "auto_config": self.auto_config,
                 "kerberos": self.kerberos_session.redacted() if self.kerberos_session else None}
 

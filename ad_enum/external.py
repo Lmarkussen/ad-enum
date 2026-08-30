@@ -27,13 +27,17 @@ def execute_external(context, plan, *, certipy_snapshot=None, progress=None):
             if progress: progress("end", item.spec.name, item.status.value)
             continue
         try:
+            previous_callback = getattr(context, "tool_output_callback", None)
+            if context.tool_output:
+                context.tool_output_callback = lambda stream, line, label=item.spec.name: progress("tool", label, stream, line) if progress else None
             if item.spec.id == "adcs-certipy" and certipy_snapshot is not None:
                 results[item.spec.id] = {"status": "PASS", "snapshot": certipy_snapshot}
             elif item.spec.id == "adcs-certipy":
                 results[item.spec.id] = {"status": "PASS", "snapshot": adapter_type().run(
                     domain=context.domain, username=context.auth.username, password=context.auth.password,
                     dc_ip=context.dc_ip, workspace=context.workspace, timeout=context.timeout,
-                    ldaps=context.ldaps, force_kerb=context.force_kerb)}
+                    ldaps=context.ldaps, force_kerb=context.force_kerb,
+                    stream=context.tool_output_callback)}
             else:
                 results[item.spec.id] = {"status": "PASS", "result": adapter_type().run(context=context)}
             if progress: progress("end", item.spec.name, "PASS")
@@ -43,4 +47,6 @@ def execute_external(context, plan, *, certipy_snapshot=None, progress=None):
             context.workspace.write_json(context.workspace.raw_dir(item.spec.outputs[0]) / "failure.json",
                                          results[item.spec.id])
             if progress: progress("end", item.spec.name, "FAILED")
+        finally:
+            context.tool_output_callback = previous_callback if 'previous_callback' in locals() else None
     return results, diagnostics

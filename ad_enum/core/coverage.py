@@ -6,6 +6,7 @@ class CoverageStatus(str, Enum):
     PARTIAL = "PARTIAL"
     NOT_RUN = "NOT RUN"
     NOT_CHECKED = "NOT CHECKED"
+    NOT_TESTED = "NOT TESTED"
     NOT_AVAILABLE = "NOT AVAILABLE"
     FAILED = "FAILED"
 

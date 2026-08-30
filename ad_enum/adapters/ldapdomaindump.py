@@ -17,7 +17,7 @@ class LDAPDomainDumpAdapter(ToolAdapter):
                                      password=context.auth.password, dc_ip=context.dc_ip,
                                      output_dir=raw)
         if context.ldaps: command[-1] = "ldaps://" + command[-1]
-        proc = self.execute(command, timeout=context.timeout, secrets=(context.auth.password,))
+        proc = self.execute(command, timeout=context.timeout, secrets=(context.auth.password,), stream=context.tool_output_callback)
         context.workspace.write_text(raw / "stdout.txt", self.redact_text(proc.stdout, (context.auth.password,)))
         context.workspace.write_text(raw / "stderr.txt", self.redact_text(proc.stderr, (context.auth.password,)))
         return {"source": self.source_name, "returncode": proc.returncode,

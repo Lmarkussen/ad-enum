@@ -19,16 +19,16 @@ class NetExecAdapter(ToolAdapter):
         command = [self.executable, "smb", *target_values, "-u", context.auth.username,
                    "-p", context.auth.password, "--no-progress"]
         if context.force_kerb: command += ["-k", "--use-kcache"]
-        proc = self.execute(command, cwd=raw, timeout=context.timeout, secrets=(context.auth.password,))
+        proc = self.execute(command, cwd=raw, timeout=context.timeout, secrets=(context.auth.password,), stream=context.tool_output_callback)
         policy_command = self.build_policy_command(domain=context.domain, username=context.auth.username,
                                                    password=context.auth.password, target=context.dc_ip)
         if context.force_kerb: policy_command += ["-k", "--use-kcache"]
         if context.ldaps: policy_command += ["--use-ldaps"]
-        policy = self.execute(policy_command, cwd=raw, timeout=context.timeout, secrets=(context.auth.password,))
+        policy = self.execute(policy_command, cwd=raw, timeout=context.timeout, secrets=(context.auth.password,), stream=context.tool_output_callback)
         share_command = [self.executable, "smb", *target_values, "-u", context.auth.username,
                          "-p", context.auth.password, "--shares", "--no-progress"]
         if context.force_kerb: share_command += ["-k", "--use-kcache"]
-        shares = self.execute(share_command, cwd=raw, timeout=context.timeout, secrets=(context.auth.password,))
+        shares = self.execute(share_command, cwd=raw, timeout=context.timeout, secrets=(context.auth.password,), stream=context.tool_output_callback)
         safe_smb = self.redact_text(proc.stdout, (context.auth.password,))
         safe_policy = self.redact_text(policy.stdout, (context.auth.password,))
         normalized_policy = normalize_password_policy(policy.stdout)

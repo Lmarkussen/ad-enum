@@ -24,7 +24,7 @@ class NetworkHoundAdapter(ToolAdapter):
                    "--user", context.auth.username, "--output", str(output), "--dns", context.dc_ip]
         if context.force_kerb: command.append("--kerberos")
         else: command.extend(["--password", context.auth.password])
-        proc = self.execute(command, timeout=context.timeout, secrets=(context.auth.password,))
+        proc = self.execute(command, timeout=context.timeout, secrets=(context.auth.password,), stream=context.tool_output_callback)
         import json
         data = json.loads(output.read_text()) if output.is_file() else {}
         return {"source": "networkhound", "raw": data,

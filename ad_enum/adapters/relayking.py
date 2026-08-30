@@ -21,7 +21,7 @@ class RelayKingAdapter(ToolAdapter):
                    "--protocols", "smb,ldap,ldaps,mssql,http,https", "--proto-portscan",
                    "--no-ghosts", "-o", "json", "--output-file", str(output), "--threads", "5"]
         if context.force_kerb: command += ["-k"]
-        proc = self.execute(command, timeout=context.timeout, secrets=(context.auth.password,))
+        proc = self.execute(command, timeout=context.timeout, secrets=(context.auth.password,), stream=context.tool_output_callback)
         safe_stdout = self.redact_text(proc.stdout, (context.auth.password,))
         safe_stderr = self.redact_text(proc.stderr, (context.auth.password,))
         context.workspace.write_text(raw / "stdout.txt", safe_stdout)
