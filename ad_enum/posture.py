@@ -118,6 +118,8 @@ def _high_impact_scope(dn):
 
 
 _GENERIC_WRITE = 0x40000000
+_GENERIC_WRITE_MASK = 0x00020028
+_GENERIC_ALL_MASK = 0x000f01ff
 _WRITE_PROPERTY = 0x00000020
 _CONTROL_ACCESS = 0x00000100
 _RESET_PASSWORD = "00299570-246d-11d0-a768-00aa006e0529"
@@ -130,6 +132,10 @@ _DANGEROUS = ((0x10000000, "GenericAll"), (_GENERIC_WRITE, "GenericWrite"),
 
 def _right_names(mask, ace, row):
     names = [name for bit, name in _DANGEROUS if mask & bit]
+    if (mask & _GENERIC_ALL_MASK) == _GENERIC_ALL_MASK:
+        names.append("GenericAll")
+    if (mask & _GENERIC_WRITE_MASK) == _GENERIC_WRITE_MASK:
+        names.append("GenericWrite")
     object_type = str(ace.get("object_type") or "").lower()
     target_classes = {str(x).lower() for x in (row.get("object_class") or [])}
     if mask & _CONTROL_ACCESS and object_type == _RESET_PASSWORD:

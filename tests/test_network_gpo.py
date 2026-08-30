@@ -97,3 +97,11 @@ def test_effective_acl_names_specific_group_reset_and_spn_rights():
          "object_type": "f3a64788-5306-11d1-a9c5-0000f80367c1", "applies_to_object": True}]}]
     rights = analyze_effective_acls(rows, inv)[0]["effective_rights"]
     assert "ResetPassword" in rights and "WriteServicePrincipalName" in rights
+
+
+def test_effective_acl_recognizes_windows_generic_composite_masks():
+    inv = DomainInventory()
+    inv.add("users", "S-1-5-21-1-2-3-1101", {"sAMAccountName": "alice", "objectClass": ["user"]}, "native-ldap")
+    rows = [{"target": "GPO", "aces": [{"sid": "S-1-5-21-1-2-3-1101",
+        "kind": "allow", "mask": 0x20028, "applies_to_object": True}]}]
+    assert "GenericWrite" in analyze_effective_acls(rows, inv)[0]["effective_rights"]
