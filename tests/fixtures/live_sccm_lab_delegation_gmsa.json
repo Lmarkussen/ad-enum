@@ -1,0 +1,33 @@
+{
+  "fixture": "SCCM.LAB delegation and gMSA live observations",
+  "sanitized": true,
+  "delegation": {
+    "unconstrained_positive": {
+      "sAMAccountName": "adenum-unconst",
+      "flag": "TRUSTED_FOR_DELEGATION",
+      "negative": "clear TRUSTED_FOR_DELEGATION"
+    },
+    "constrained_positive": {
+      "sAMAccountName": "adenum-const",
+      "allowed_to_delegate_to": ["HOST/dc.sccm.lab"],
+      "protocol_transition": true,
+      "uac_protocol_transition_bit": "0x1000000",
+      "negative": "clear msDS-AllowedToDelegateTo"
+    },
+    "rbcd_positive": {
+      "target": "CLIENT",
+      "target_dn": "CN=CLIENT,CN=Computers,DC=sccm,DC=lab",
+      "allowed_principal": "ADENUM-RBCD-SRC",
+      "source_dn": "CN=ADENUM-RBCD-SRC,OU=ADEnum-Lab,DC=sccm,DC=lab",
+      "negative": "clear msDS-AllowedToActOnBehalfOfOtherIdentity"
+    }
+  },
+  "gmsa": {
+    "name": "adenum-gmsa$",
+    "dn": "CN=adenum-gmsa,OU=ADEnum-Lab,DC=sccm,DC=lab",
+    "spns": ["HOST/adenum-gmsa.sccm.lab"],
+    "allowed_retrieval_principal": "ADEnum-gMSA-Readers",
+    "variation": "Domain Users was tested as an alternate reader and then restored",
+    "managed_password_retrieved": false
+  }
+}

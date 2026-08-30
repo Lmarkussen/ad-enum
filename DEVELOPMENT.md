@@ -223,3 +223,17 @@ one-shot synchronization it reported approximately `-0.000078s`. The
 full `--auto-config --sync-time --force-kerb` run passed Native LDAP,
 BloodHound, Certipy, and NetExec. LDAPDomainDump remains unsupported/failed
 under forced Kerberos and does not fall back to NTLM.
+
+Delegation validation subsequently added a real RBCD relationship from
+`ADENUM-RBCD-SRC` to the existing `CLIENT` computer. Clearing
+`msDS-AllowedToActOnBehalfOfOtherIdentity` removed the native RBCD finding;
+restoring it returned the finding. The full multi-source scan retains the
+native binary descriptor after correlation.
+
+The live gMSA is `adenum-gmsa$` (the requested longer name is invalid because
+the account SAM name limit is 15 characters). It has
+`HOST/adenum-gmsa.sccm.lab` and a reader descriptor for
+`ADEnum-gMSA-Readers`. Changing the reader to Domain Users changed the live
+decoded reader SID and restoring the dedicated group returned the original
+state. A KDS root key was required and was created as a lab-only prerequisite;
+no managed password was read.

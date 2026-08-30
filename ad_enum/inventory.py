@@ -107,7 +107,16 @@ class DomainInventory:
         if record is None:
             self.records[kind][key] = InventoryRecord(kind, str(identifier), attributes or {}, [source] if source else [])
         else:
-            record.attributes.update(attributes or {})
+            # Native LDAP may carry binary security descriptors.  Do not let
+            # a later structured-source placeholder (or an empty value)
+            # destroy that evidence during correlation.
+            for name, value in (attributes or {}).items():
+                old = record.attributes.get(name)
+                if old not in (None, "", [], {}) and value in (None, "", [], {}):
+                    continue
+                if isinstance(old, (bytes, bytearray)) and isinstance(value, dict):
+                    continue
+                record.attributes[name] = value
             if source and source not in record.sources: record.sources.append(source)
 
     def counts(self): return {kind: len(values) for kind, values in self.records.items() if kind != "relationships"}

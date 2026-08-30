@@ -29,15 +29,17 @@ Ensure-User 'adenum-const' 0x200 "HOST/adenum-const.$DnsSuffix"
 Set-ADUser 'adenum-const' -Add @{'msDS-AllowedToDelegateTo'="HOST/$DnsSuffix"}
 
 # RBCD uses an ordinary computer source and the existing CLIENT target.
-$source = Get-ADComputer 'ADENUM-RBCD-SOURCE' -ErrorAction SilentlyContinue
-if (-not $source) { $source = New-ADComputer -Name 'ADENUM-RBCD-SOURCE' -SamAccountName 'ADENUM-RBCD-SOURCE$' -Path "CN=Computers,$((Get-ADDomain).DistinguishedName)" -PassThru }
+$source = Get-ADComputer 'ADENUM-RBCD-SRC' -ErrorAction SilentlyContinue
+if (-not $source) { $source = New-ADComputer -Name 'ADENUM-RBCD-SRC' -SamAccountName 'ADENUM-RBCD-SRC$' -Path $ou -PassThru }
 $target = Get-ADComputer 'CLIENT'
 Set-ADComputer $target -PrincipalsAllowedToDelegateToAccount $source
 
-# gMSA creation is best-effort because it requires a KDS root key in the lab.
-if (-not (Get-ADServiceAccount 'adenum-gmsa-test' -ErrorAction SilentlyContinue)) {
-  New-ADServiceAccount -Name 'adenum-gmsa-test' -DNSHostName "adenum-gmsa-test.$DnsSuffix" `
-    -PrincipalsAllowedToRetrieveManagedPassword "$Domain\Domain Users" `
-    -ServicePrincipalNames "HOST/adenum-gmsa-test.$DnsSuffix"
+# gMSA creation requires a KDS root key; this lab has one configured.
+$readers = Get-ADGroup 'ADEnum-gMSA-Readers' -ErrorAction SilentlyContinue
+if (-not $readers) { $readers = New-ADGroup -Name 'ADEnum-gMSA-Readers' -SamAccountName 'ADENUM-GMSA-RDR' -GroupScope Global -Path $ou -PassThru }
+if (-not (Get-ADServiceAccount 'adenum-gmsa' -ErrorAction SilentlyContinue)) {
+  New-ADServiceAccount -Name 'adenum-gmsa' -Path $ou -DNSHostName "adenum-gmsa.$DnsSuffix" `
+    -PrincipalsAllowedToRetrieveManagedPassword $readers `
+    -ServicePrincipalNames "HOST/adenum-gmsa.$DnsSuffix"
 }
 Write-Output 'AD-Enum lab fixtures configured.'
