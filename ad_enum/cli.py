@@ -45,7 +45,12 @@ def _finding_lines(findings):
         items = grouped.get(category, [])
         if not items:
             continue
-        lines.extend([f"------------[ {category} ]------------", ""])
+        # The leading empty line is part of the report contract.  The
+        # previous finding already contributes the trailing empty line, so
+        # do not add another one at category boundaries.
+        if not lines or lines[-1] != "":
+            lines.append("")
+        lines.append(f"------------[ {category} ]------------")
         for item in items:
             status = item.get("status", "").upper()
             if item.get("rule") == "ESC1" and status in {"DISAGREEMENT", "LIVE-CONFIRMED DISAGREEMENT"}:
@@ -106,7 +111,7 @@ def _results_text(root, target, external_results, inventory, cas, templates, all
         lines.append(Console.field(label, counts.get(key, 0)))
     lines.extend([Console.field("CAs", len(cas)), Console.field("Templates", len(templates)), "",
                   "Correlation", Console.field("Corroborated", corroborated),
-                  Console.field("Disagreements", disagreements), "", "Findings", ""])
+                  Console.field("Disagreements", disagreements), "", "Findings"])
     finding_lines = _finding_lines(all_findings)
     lines.extend(finding_lines or ["  None"])
     lines.extend(["", "Workspace", f"  {workspace.domain}/", ""])
@@ -855,8 +860,7 @@ def main():
         for category in category_order + tuple(x for x in grouped if x not in category_order):
             items = grouped.get(category, [])
             if not items: continue
-            console.line()
-            console.heading(f"------------[ {category} ]------------")
+            console.category_header(category)
             for item in items:
                 display_status = item.get("status")
                 if item.get("rule") == "ESC1" and display_status in {"disagreement", "live-confirmed disagreement"}:

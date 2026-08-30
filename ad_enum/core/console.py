@@ -42,6 +42,11 @@ class Console:
     def heading(self, text):
         self.line(self.paint(text, "cyan"))
 
+    def category_header(self, category):
+        """Print one deliberate separator line before a findings category."""
+        self.line()
+        self.heading(f"------------[ {category} ]------------")
+
     def status(self, text, state=None):
         palette = {"PASS": "green", "VALID": "green", "CORROBORATED": "green",
                    "FAILED": "red", "INVALID": "red", "DISAGREEMENT": "yellow",

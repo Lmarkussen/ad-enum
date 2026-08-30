@@ -4,6 +4,7 @@ from ad_enum.core.workspace import ScanWorkspace
 from ad_enum.inventory import DomainInventory
 from ad_enum.kerberos import ad_filetime, account_security_context, account_exposure
 from ad_enum.inventory import InventoryRecord
+from io import StringIO
 
 
 def _report(tmp_path, findings):
@@ -35,6 +36,34 @@ def test_results_report_suppresses_disabled_kerberoast(tmp_path):
         "title": "Kerberoastable — disabled (disabled)", "affected_object": "disabled",
         "status": "single-source", "evidence": {"enabled": False}}])
     assert "Kerberoastable — disabled" not in report
+
+
+def test_each_report_category_has_exactly_one_preceding_blank_line(tmp_path):
+    findings = [{"category": "ADCS", "rule": "esc1", "title": "ESC1 — T",
+                 "affected_object": "T", "status": "confirmed", "evidence": {}},
+                {"category": "POLICY", "rule": "weak", "title": "Weak policy",
+                 "affected_object": "domain", "status": "single-source", "evidence": {}},
+                {"category": "KERBEROS", "rule": "x", "title": "Kerberoastable — svc",
+                 "affected_object": "svc", "status": "corroborated", "evidence": {}}]
+    report = _report(tmp_path, findings)
+    lines = report.splitlines()
+    headers = [i for i, line in enumerate(lines) if line.startswith("------------[")]
+    assert [lines[i - 1] for i in headers] == ["", "", ""]
+    assert all(i < len(lines) - 1 and lines[i + 1] != "" for i in headers)
+    assert "Findings\n\n------------[ ADCS ]------------" in report
+
+
+def test_terminal_category_header_has_one_blank_line_plain_and_color_modes():
+    class TTY(StringIO):
+        def isatty(self): return True
+    for stream, no_color in ((StringIO(), True), (TTY(), False)):
+        console = Console(stream=stream, no_color=no_color)
+        console.heading("Findings")
+        console.category_header("ADCS")
+        console.category_header("POLICY")
+        lines = stream.getvalue().splitlines()
+        headers = [i for i, line in enumerate(lines) if "------------[" in line]
+        assert [lines[i - 1] for i in headers] == ["", ""]
 
 
 def test_results_write_is_atomic_and_scan_history_can_hold_copy(tmp_path):
