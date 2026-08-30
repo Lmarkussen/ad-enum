@@ -241,7 +241,7 @@ def main():
     gpos = attach_gpo_links(normalize_gpos(collector.raw.get("gpos", [])),
                             collector.raw.get("gpo_links", []))
     gpo_acls = normalize_gpo_acls(collector.raw.get("gpos", []))
-    gpo_by_name = {str(x.get("gpo", "")).lower(): x for x in gpos}
+    gpo_by_name = {str(x.get("display_name", "")).lower(): x for x in gpos}
     for acl in gpo_acls:
         scope = gpo_by_name.get(str(acl.get("gpo", "")).lower(), {}).get("scope", {})
         acl["scope"] = scope
