@@ -5,7 +5,7 @@ from .models import PrincipalContext, CA
 from .publication import build_publication_index
 from .rules import evaluate_esc1
 
-def scan(cas, templates, *, certipy=None):
+def scan(cas, templates, *, certipy=None, coverage=None):
     publication, dangling, duplicates = build_publication_index(cas, templates)
     principals = PrincipalContext(set().union(*(t.evidence.get("low_privileged_subject_sids", set())
                                                 for t in templates)))
@@ -19,7 +19,7 @@ def scan(cas, templates, *, certipy=None):
     if certipy:
         for name, assessment in certipy.assessments.items():
             comparisons.setdefault(name, Corroboration(name)).assessments.append(assessment)
-    coverage = CoverageReport()
+    coverage = coverage or CoverageReport()
     coverage.add("AD CS / CA discovery", CoverageStatus.PASS, f"{len(cas)} CA(s)")
     coverage.add("AD CS / templates", CoverageStatus.PASS, f"{len(templates)} template(s)")
     coverage.add("AD CS / publication", CoverageStatus.PASS if not dangling else CoverageStatus.PARTIAL,

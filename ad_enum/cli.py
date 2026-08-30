@@ -2,6 +2,7 @@ import argparse
 import sys
 import ipaddress
 import shutil
+import socket
 from importlib.resources import files
 from .ldap_collect import Collector
 from .adcs import scan
@@ -24,6 +25,7 @@ from .posture import (normalize_smb, normalize_trusts, normalize_gpo_acls, norma
 from .kerberos import roastable, account_exposure, privileged_account_sids, account_security_context
 from .delegation import enumerate_delegation, enumerate_gmsa
 from .core.console import Console
+from .core.coverage import CoverageReport
 from .anonymous import probe_anonymous_ldap, probe_anonymous_smb
 from .reporting.html import write_html_report
 
@@ -183,15 +185,18 @@ def main():
             console.line("  Re-run with --sync-time.")
     collector = Collector(target, a.username, a.password, bind_domain, a.ldaps, a.port,
                           timeout=a.timeout, force_kerb=a.force_kerb)
-    # Keep this probe independent of the authenticated collection outcome.
-    # It is still bounded to the requested DC and never uses the scan secret.
-    console.activity("Checking anonymous LDAP posture...")
-    anonymous_ldap = probe_anonymous_ldap(target, a.domain, timeout=min(a.timeout, 5))
-    console.complete("Anonymous LDAP posture complete", "WARNING" if anonymous_ldap.get("error") else "PASS")
     try:
         console.activity("Resolving target...")
         root, _ = collector.preflight()
-        console.complete(f"Target resolved: {target}")
+        resolved_name = target
+        try:
+            if ipaddress.ip_address(target):
+                reverse_name = socket.getfqdn(target)
+                if reverse_name and reverse_name != target:
+                    resolved_name = f"{reverse_name} ({target})"
+        except ValueError:
+            pass
+        console.complete(f"Target resolved: {resolved_name}")
     except Exception as exc:
         failure = translate_kerberos_error(exc) if a.force_kerb else None
         if failure and failure.category != "bad-credentials":
@@ -214,6 +219,16 @@ def main():
         return 2
     console.status("Credentials are Valid", "VALID")
     workspace = ScanWorkspace(a.output_dir, root, original_target=target)
+    # Establish one scan-scoped accumulator before any analysis records
+    # coverage; the final write changes scan status to COMPLETE.
+    coverage = CoverageReport()
+    workspace.write_json(workspace.root / "scan.json", {
+        "status": "INCOMPLETE", "domain": root, "canonical_domain": workspace.domain,
+        "target": target, "scan_id": workspace.scan_id,
+    })
+    console.activity("Checking anonymous LDAP posture...")
+    anonymous_ldap = probe_anonymous_ldap(target, root, timeout=min(a.timeout, 5))
+    console.complete("Anonymous LDAP posture complete", "WARNING" if anonymous_ldap.get("error") else "PASS")
     requested = []
     for module in (x.strip().lower() for x in a.modules.split(",") if x.strip()):
         if module == "all": requested.extend(("bloodhound", "adcs-certipy", "ldapdomaindump", "netexec", "ldap", "adcs-native", "kerberos", "delegation", "sccm-discovery", "relay", "networkhound", "gpo"))
@@ -242,6 +257,7 @@ def main():
     inventory = native_inventory(collector.raw)
     native_counts = inventory.counts()
     context.targets = build_targets(inventory)
+    privileged_sids = privileged_account_sids(inventory)
     def report_progress(stage, label, state=None, line=None):
         if stage == "start": console.activity(f"Running {label}...")
         elif stage == "tool": console.line(console.paint(f"[{label}{':stderr' if state == 'stderr' else ''}] {line.rstrip()}" , "dim" if state == "stderr" else None))
@@ -357,7 +373,7 @@ def main():
                          "\n".join(f"[{x['category']}] {x['title']}" for x in ldap_security_findings) +
                          ("\n" if ldap_security_findings else ""))
     console.complete("LDAP security analysis complete")
-    findings, comparisons, coverage, dangling, duplicates = scan(cas, templates, certipy=certipy)
+    findings, comparisons, coverage, dangling, duplicates = scan(cas, templates, certipy=certipy, coverage=coverage)
     coverage.add("LDAP / anonymous posture", "PARTIAL" if anonymous_ldap.get("error") else "PASS",
                  f"bind={anonymous_ldap.get('bind')}, domain-data={anonymous_ldap.get('domain_data')}")
     coverage.add("SMB / anonymous posture", "PARTIAL" if any(x.get("error") for x in anonymous_smb) else "PASS",
@@ -382,7 +398,6 @@ def main():
     workspace.write_json(workspace.findings_path("Kerberos", "gmsa.json"), gmsa_records)
     coverage.add("Kerberos / account exposure", "PASS", "native LDAP account flags and SPNs")
     coverage.add("Delegation / LDAP configuration", "PASS", "UAC, constrained delegation, and RBCD observations")
-    privileged_sids = privileged_account_sids(inventory)
     domain_security = {"machine_account_quota": collector.raw.get("machineAccountQuota", "unknown"),
                        "account_flag_observations": [], "privileged_sids": sorted(privileged_sids)}
     domain_security_findings = []
@@ -699,7 +714,7 @@ def main():
         coverage.add("Relay / safe exposure enumeration", "NOT AVAILABLE" if relay_result.get("status") == "UNAVAILABLE" else "FAILED",
                      relay_result.get("reason", "RelayKing not executed"))
     workspace.write_json(workspace.root / "scan.json", {
-        "domain": root, "canonical_domain": workspace.domain, "target": target,
+        "status": "COMPLETE", "domain": root, "canonical_domain": workspace.domain, "target": target,
         "username": a.username, "scan_id": workspace.scan_id,
         "modules": [item.spec.id for item in plan],
         "execution_plan": [{"module": item.spec.id, "status": item.status.value, "reason": item.reason} for item in plan],
