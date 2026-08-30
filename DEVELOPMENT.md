@@ -258,3 +258,25 @@ probe. HTTPS probing failed TLS validation because the lab did not present a
 usable trusted server certificate. PXE, DP, SUP/WSUS, SMS Provider, and the
 SCCM SQL association remain unknown/candidate unless a role-specific source
 confirms them. No SCCM content or secrets were downloaded.
+
+## DNS map and GPO/SYSVOL baseline
+
+NetworkHound was reviewed as an optional topology source. Its LDAP computer
+discovery and DNS resolution are separate from port scanning, HTTP validation,
+SMB validation, and shadow-IT scanning; AD-Enum enables none of those broad
+modes. NetworkHound supports Kerberos through `KRB5CCNAME` and an explicit DNS
+server, but is not installed in the lab Kali environment. Native DNS mapping
+therefore remains available and stores forward/reverse mappings, provenance,
+and multiple-address conflicts in `dns-map.json`.
+
+The live native map resolved `dc.sccm.lab` to `10.1.10.40`,
+`mecm.sccm.lab` to `10.1.10.41`, `mssql.sccm.lab` to `10.1.10.42`, and
+`client.sccm.lab` to `10.1.10.43`. Fixture identities without DNS records are
+retained as unresolved records.
+
+The GPO collector found two domain GPOs: Default Domain Policy and Default
+Domain Controllers Policy. Authenticated SYSVOL inspection succeeded with the
+low-privilege scan identity and found only each policy's `GPT.INI`. No targeted
+GPP credential files, scripts, or cleartext credential evidence were present.
+Credential evidence is redacted and `cpassword` is not decrypted. No GPO or
+lab configuration was modified.
