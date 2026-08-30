@@ -62,6 +62,24 @@ def test_results_report_shows_authenticated_access_without_privilege_inference(t
     assert "DC.sccm.lab  SSH ........ AUTHENTICATED" in report
 
 
+def test_results_report_shows_complete_cred1_finding_credential(tmp_path):
+    finding = {"category": "SCCM", "rule": "CRED-1",
+               "title": "CRED-1 — PXE boot media exposes credential material",
+               "affected_object": "10.0.0.41", "status": "confirmed",
+               "evidence": {"dp": "10.0.0.41", "site": "P01", "interface": "eth0",
+                            "wds": "CONFIRMED", "boot_var": "RECOVERED",
+                            "media_identity": "RECOVERED", "assignment": "RECEIVED",
+                            "policies": 5, "unique_secrets": 1,
+                            "type": "task_sequence_variable", "name": "SyntheticName",
+                            "value": "ADEnum-CRED1-Test-Secret",
+                            "source_policy": "Policy-A"}}
+    report = _report(tmp_path, [finding])
+    assert "Unique secrets ..... 1" in report
+    assert "Recovered credential" in report
+    assert "ADEnum-CRED1-Test-Secret" in report
+    assert "SyntheticName" in report
+
+
 def test_console_field_has_one_status_column():
     lines = [Console.field(label, "PASS") for label in
              ("Native LDAP", "BloodHound", "Certipy", "LDAPDomainDump", "NetExec")]

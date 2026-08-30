@@ -107,13 +107,24 @@ def _finding_lines(findings):
                     label = "cpassword" if item.get("rule") == "gpp-cpassword" else "Value"
                     lines.append(f"  {label:<18} {evidence['value']}")
             elif category == "SCCM" and item.get("rule") == "CRED-1":
-                lines.extend([f"  Type ............. {evidence.get('type', 'other')}",
-                              f"  Name ............. {evidence.get('name', '')}"])
+                lines.extend([f"  Distribution Point . {evidence.get('dp', item.get('affected_object', 'unknown'))}",
+                              f"  Site ............... {evidence.get('site', 'UNKNOWN')}",
+                              f"  Interface .......... {evidence.get('interface', 'UNKNOWN')}",
+                              f"  WDS reply .......... {evidence.get('wds', 'UNKNOWN')}",
+                              f"  boot.var ........... {evidence.get('boot_var', 'UNKNOWN')}",
+                              f"  Media identity ..... {evidence.get('media_identity', 'UNKNOWN')}",
+                              f"  Assignment .......... {evidence.get('assignment', 'UNKNOWN')}",
+                              f"  Policies ........... {evidence.get('policies', 0)}",
+                              f"  Unique secrets ..... {evidence.get('unique_secrets', 1)}",
+                              f"  Status ............. {status}", "",
+                              "  Recovered credential",
+                              f"    Type ............. {evidence.get('type', 'other')}",
+                              f"    Name ............. {evidence.get('name', '')}"])
                 if evidence.get("username"):
-                    lines.append(f"  Username ......... {evidence['username']}")
-                lines.append(f"  Password ......... {evidence.get('value', '')}")
+                    lines.append(f"    Username ......... {evidence['username']}")
+                lines.append(f"    Password ......... {evidence.get('value', '')}")
                 if evidence.get("source_policy"):
-                    lines.append(f"  Source policy .... {evidence['source_policy']}")
+                    lines.append(f"    Source ........... {evidence['source_policy']}")
             elif status:
                 lines.append(f"  Status ........... {status}")
             lines.append("")
@@ -210,6 +221,14 @@ def _results_text(root, target, external_results, inventory, cas, templates, all
         lines.extend(["", "SCCM CRED-1 PXE"])
         for item in cred1 if isinstance(cred1, list) else [cred1]:
             lines.extend([f"  DP ................ {item.get('dp', 'unknown')}",
+                          f"  Site .............. {item.get('site_code', 'UNKNOWN')}",
+                          f"  Interface ......... {item.get('interface', 'UNKNOWN')}",
+                          f"  WDS reply ......... {item.get('wds', 'UNKNOWN')}",
+                          f"  boot.var .......... {item.get('boot_var', 'UNKNOWN')}",
+                          f"  Media identity .... {item.get('media_identity', 'UNKNOWN')}",
+                          f"  Assignment ......... {item.get('assignment', 'UNKNOWN')}",
+                          f"  Policies ........... {item.get('policies', 0)}",
+                          f"  Unique secrets ..... {len(item.get('credentials', []) or [])}",
                           f"  PXE ............... {item.get('pxe', 'UNKNOWN')}",
                           f"  TFTP .............. {item.get('tftp', 'UNKNOWN')}",
                           f"  Boot metadata ..... {item.get('boot_file') or 'UNKNOWN'}",
@@ -1066,7 +1085,14 @@ def main():
                           "username": secret.get("username", ""), "value": value,
                           "source_policy": secret.get("source_policy", ""),
                           "task_sequence": secret.get("task_sequence", ""),
-                          "dp": cred1_item.get("dp", ""), "site": cred1_item.get("site_code", "")},
+                          "dp": cred1_item.get("dp", ""), "site": cred1_item.get("site_code", ""),
+                          "interface": cred1_item.get("interface", ""),
+                          "wds": cred1_item.get("wds", "UNKNOWN"),
+                          "boot_var": cred1_item.get("boot_var", "UNKNOWN"),
+                          "media_identity": cred1_item.get("media_identity", "UNKNOWN"),
+                          "assignment": cred1_item.get("assignment", "UNKNOWN"),
+                          "policies": cred1_item.get("policies", 0),
+                          "unique_secrets": len(cred1_item.get("credentials", []) or [])},
                 status="confirmed", priority="high", workspace_artifacts=["SCCM/cred1.json"],
                 first_seen_scan=workspace.scan_id, current_scan=workspace.scan_id).as_dict())
     seen_credentials = set()
@@ -1340,6 +1366,14 @@ def main():
         console.heading("SCCM CRED-1 PXE")
         for item in cred1_output if isinstance(cred1_output, list) else [cred1_output]:
             console.line(f"  DP ................ {item.get('dp', 'unknown')}")
+            console.line(f"  Site .............. {item.get('site_code', 'UNKNOWN')}")
+            console.line(f"  Interface ......... {item.get('interface', 'UNKNOWN')}")
+            console.line(f"  WDS reply ......... {item.get('wds', 'UNKNOWN')}")
+            console.line(f"  boot.var .......... {item.get('boot_var', 'UNKNOWN')}")
+            console.line(f"  Media identity .... {item.get('media_identity', 'UNKNOWN')}")
+            console.line(f"  Assignment ......... {item.get('assignment', 'UNKNOWN')}")
+            console.line(f"  Policies ........... {item.get('policies', 0)}")
+            console.line(f"  Unique secrets ..... {len(item.get('credentials', []) or [])}")
             console.line(f"  PXE ............... {item.get('pxe', 'UNKNOWN')}")
             console.line(f"  TFTP .............. {item.get('tftp', 'UNKNOWN')}")
             console.line(f"  Boot metadata ..... {item.get('boot_file') or 'UNKNOWN'}")

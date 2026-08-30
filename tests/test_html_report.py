@@ -71,6 +71,21 @@ def test_html_shows_authenticated_access():
     assert "AUTHENTICATED" in report
 
 
+def test_html_shows_cred1_finding_credential_details():
+    model = _model()
+    model["findings"] = [{"category": "SCCM", "rule": "CRED-1",
+                           "title": "CRED-1 — PXE boot media exposes credential material",
+                           "status": "confirmed", "affected_object": "10.0.0.41",
+                           "evidence": {"dp": "10.0.0.41", "site": "P01", "policies": 5,
+                                        "unique_secrets": 1, "type": "task_sequence_variable",
+                                        "name": "SyntheticName", "value": "ADEnum-CRED1-Test-Secret",
+                                        "source_policy": "Policy-A"}}]
+    report = render_html(model)
+    assert "SyntheticName" in report
+    assert "ADEnum-CRED1-Test-Secret" in report
+    assert "Policy-A" in report
+
+
 def test_installer_uses_explicit_netexec_package_path():
     installer = open("install.sh", encoding="utf-8").read()
     assert "pipx install --force netexec" in installer

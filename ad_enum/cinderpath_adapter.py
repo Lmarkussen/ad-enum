@@ -106,6 +106,10 @@ def run_cinderpath_cred1(target, *, timeout=60, executable=None):
         payload.setdefault("pxe", "CONFIRMED")
         payload.setdefault("wds", "CONFIRMED")
         payload.setdefault("tftp", "CONFIRMED")
+        payload.setdefault("boot_var", "RECOVERED")
+        payload.setdefault("media_identity", "RECOVERED")
+        payload.setdefault("assignment", "RECEIVED")
+        payload.setdefault("certificate", "USABLE")
         payload.setdefault("secret_inspection", "COMPLETE")
     payload["policies"] = payload.get("task_sequence_policies", payload.get("policy_count", 0))
     payload["sources"] = list(payload.get("sources", []) or []) + ["CinderPath"]

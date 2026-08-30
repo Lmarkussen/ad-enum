@@ -48,6 +48,17 @@ def render_html(model):
             evidence = finding.get("evidence", {}) or {}
             sources = finding.get("sources", []) or []
             details = "" if not evidence else f"<details><summary>Evidence</summary><pre>{_json(evidence)}</pre></details>"
+            cred1 = ""
+            if finding.get("rule") == "CRED-1":
+                cred1 = (f"<dl><dt>Distribution Point</dt><dd>{_e(evidence.get('dp', finding.get('affected_object', '')))}</dd>"
+                         f"<dt>Site</dt><dd>{_e(evidence.get('site', 'UNKNOWN'))}</dd>"
+                         f"<dt>Policies</dt><dd>{_e(evidence.get('policies', 0))}</dd>"
+                         f"<dt>Unique secrets</dt><dd>{_e(evidence.get('unique_secrets', 1))}</dd>"
+                         f"<dt>Type</dt><dd>{_e(evidence.get('type', 'other'))}</dd>"
+                         f"<dt>Name</dt><dd>{_e(evidence.get('name', ''))}</dd>"
+                         + (f"<dt>Username</dt><dd>{_e(evidence['username'])}</dd>" if evidence.get("username") else "")
+                         + f"<dt>Password</dt><dd><code>{_e(evidence.get('value', ''))}</code></dd>"
+                         f"<dt>Source</dt><dd>{_e(evidence.get('source_policy', 'CinderPath'))}</dd></dl>")
             objects = _affected_objects(finding)
             object_block = (f"<details open><summary>Affected objects ({len(objects)})</summary><ul>" +
                             "".join(f"<li>{_e(value)}</li>" for value in objects) + "</ul></details>") if objects else ""
@@ -58,7 +69,7 @@ def render_html(model):
                 f"<span class=\"meta\">Object: {_e(finding.get('affected_object', 'unknown'))}</span></div>"
                 f"<dl><dt>Impact</dt><dd>{_e(evidence.get('impact', finding.get('impact', '')) or '—')}</dd>"
                 f"<dt>Sources</dt><dd>{_e(', '.join(str(x.get('source', '')) for x in sources if isinstance(x, dict)) or '—')}</dd></dl>"
-                f"{object_block}{details}</article>"
+                f"{object_block}{cred1}{details}</article>"
             )
         finding_sections.append(f'<section id="finding-{_e(category.lower())}"><h2>{_e(category)}</h2>{"".join(cards)}</section>')
 
