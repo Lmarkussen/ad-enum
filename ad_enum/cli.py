@@ -208,7 +208,7 @@ def main():
         safe = dict(item); safe.pop("content", None)
         workspace.write_json(workspace.raw_dir("GPO") / (str(item["gpo_guid"]).strip("{}").lower() + ".json"), safe)
     workspace.write_json(workspace.findings_path("GPO", "inventory.json"), gpos)
-    workspace.write_json(workspace.findings_path("GPO", "policies.json"), {"status": sysvol.get("status"), "files": [{k: v for k, v in x.items() if k != "content"} for x in sysvol.get("files", [])]})
+    workspace.write_json(workspace.findings_path("GPO", "policies.json"), {"status": sysvol.get("status"), "error": sysvol.get("error", ""), "files": [{k: v for k, v in x.items() if k != "content"} for x in sysvol.get("files", [])]})
     workspace.write_json(workspace.findings_path("GPO", "findings.json"), gpo_findings)
     coverage.add("GPO / LDAP inventory", "PASS", f"{len(gpos)} group policy object(s)")
     gpo_status = {"PASS": "PASS", "FAILED": "FAILED", "UNAVAILABLE": "NOT AVAILABLE"}.get(sysvol.get("status"), "FAILED")

@@ -62,8 +62,8 @@ def collect_sysvol(context, gpos, max_bytes=1024 * 1024):
     """Read only known policy files from SYSVOL using Impacket SMB."""
     try:
         from impacket.smbconnection import SMBConnection
-    except ImportError:
-        return {"status": "UNAVAILABLE", "files": [], "error": "impacket unavailable"}
+    except ImportError as exc:
+        return {"status": "UNAVAILABLE", "files": [], "error": f"impacket unavailable: {exc}"}
     host = context.dc_hostname or context.dc_ip
     connection = None
     files = []
