@@ -5,8 +5,8 @@ It never reads credentials artifacts and never creates command/shell actions.
 """
 
 
-AUTH_STATES = {"AUTHENTICATED", "DENIED", "AUTH ERROR", "NOT TESTED",
-               "NOT APPLICABLE", "PROTOCOL UNAVAILABLE", "UNKNOWN"}
+AUTH_STATES = {"AUTHENTICATED", "DENIED", "AUTH ERROR", "TIMEOUT", "TOOL FAILURE",
+               "NOT TESTED", "NOT APPLICABLE", "PROTOCOL UNAVAILABLE", "UNKNOWN"}
 
 
 def normalize_access(record):

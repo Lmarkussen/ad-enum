@@ -107,6 +107,20 @@ class NetExecAdapter(ToolAdapter):
                 record["roles"] = item.get("roles", []) or []
                 record["port"] = item.get("port")
                 records.append(record)
+            except TimeoutError as exc:
+                records.append({"host": host or target, "ip": item.get("ip", target),
+                                "roles": item.get("roles", []), "protocol": protocol,
+                                "port": item.get("port"), "principal": context.auth.username,
+                                "authentication": "TIMEOUT", "privilege": "UNKNOWN",
+                                "source": "NetExec", "evidence": {},
+                                "error_class": type(exc).__name__})
+            except (OSError, ImportError) as exc:
+                records.append({"host": host or target, "ip": item.get("ip", target),
+                                "roles": item.get("roles", []), "protocol": protocol,
+                                "port": item.get("port"), "principal": context.auth.username,
+                                "authentication": "TOOL FAILURE", "privilege": "UNKNOWN",
+                                "source": "NetExec", "evidence": {},
+                                "error_class": type(exc).__name__})
             except Exception as exc:
                 records.append({"host": host or target, "ip": item.get("ip", target),
                                 "roles": item.get("roles", []), "protocol": protocol,
