@@ -16,7 +16,8 @@ from .core.findings import NormalizedFinding
 from .external import execute_external
 from .inventory import (native_inventory, DomainInventory, build_targets, sensitive_description,
                         parse_netexec_smb, extract_attribute_secret)
-from .sccm import discover as discover_sccm, normalize_relayking, probe_management_points
+from .sccm import (discover as discover_sccm, normalize_relayking,
+                   probe_management_points, cred1_candidates)
 from .network import build_dns_map
 from .dns_enum import normalize_zones, normalize_records, merge_into_dns_map, normalize_password_settings
 from .gpo import normalize_gpos, collect_sysvol, collect_netlogon, inspect_file, parse_security_settings
@@ -158,7 +159,7 @@ def _access_summary_lines(access_records):
 
 def _results_text(root, target, external_results, inventory, cas, templates, all_findings,
                   workspace, *, corroborated=0, disagreements=0, smb_shares=None, services=None,
-                  access_records=None):
+                  access_records=None, cred1=None):
     lines = ["AD-Enum", "", "Target",
              Console.field("Domain", root), Console.field("DC", target), "",
              "Collectors", Console.field("Native LDAP", "PASS")]
@@ -196,6 +197,15 @@ def _results_text(root, target, external_results, inventory, cas, templates, all
     access_lines = _access_summary_lines(access_records)
     if access_lines:
         lines.extend(["", "Authenticated Access", *access_lines])
+    if cred1:
+        lines.extend(["", "SCCM CRED-1 PXE"])
+        for item in cred1 if isinstance(cred1, list) else [cred1]:
+            lines.extend([f"  DP ................ {item.get('dp', 'unknown')}",
+                          f"  PXE ............... {item.get('pxe', 'UNKNOWN')}",
+                          f"  TFTP .............. {item.get('tftp', 'UNKNOWN')}",
+                          f"  Boot metadata ..... {item.get('boot_file') or 'UNKNOWN'}",
+                          f"  Media protection .. {item.get('media_protection', 'UNKNOWN')}",
+                          f"  Secret inspection . {item.get('secret_inspection', 'NOT ATTEMPTED')}", ""])
     lines.extend(["", "Findings"])
     finding_lines = _finding_lines(all_findings)
     lines.extend(finding_lines or ["  None"])
@@ -632,15 +642,17 @@ def main():
                          sccm_result.get("dp_content", []))
     workspace.write_json(workspace.findings_path("SCCM", "task-sequences.json"),
                          sccm_result.get("task_sequences", []))
-    if a.cred1_dp:
+    cred1_targets = [a.cred1_dp] if a.cred1_dp else cred1_candidates(sccm_result)
+    if cred1_targets:
         console.activity("Checking SCCM CRED-1 PXE exposure...")
-        cred1 = run_safe_cred1(a.cred1_dp, timeout=min(a.timeout, 30),
-                               limits=SCCMArtifactLimits())
-        sccm_result["cred1"] = cred1
-        workspace.write_json(workspace.findings_path("SCCM", "cred1.json"), cred1)
-        cred1_status = "PASS" if cred1.get("pxe") == "CONFIRMED" else "PARTIAL"
+        cred1_results = [run_safe_cred1(target, timeout=min(a.timeout, 30),
+                                        limits=SCCMArtifactLimits())
+                         for target in cred1_targets[:4]]
+        sccm_result["cred1"] = cred1_results[0] if len(cred1_results) == 1 else cred1_results
+        workspace.write_json(workspace.findings_path("SCCM", "cred1.json"), sccm_result["cred1"])
+        cred1_status = "PASS" if any(x.get("pxe") == "CONFIRMED" for x in cred1_results) else "PARTIAL"
         coverage.add("SCCM / CRED-1 safe PXE acquisition", cred1_status,
-                     f"PXE={cred1.get('pxe', 'UNKNOWN')}; media={cred1.get('media_protection', 'UNKNOWN')}")
+                     f"{len(cred1_results)} discovered DP candidate(s) checked")
         console.complete("SCCM CRED-1 PXE analysis complete")
     else:
         coverage.add("SCCM / CRED-1 safe PXE acquisition", "NOT TESTED",
@@ -1125,7 +1137,7 @@ def main():
     report_text = _results_text(root, target, external_results, inventory, cas, templates, all_findings,
                                 workspace, corroborated=len(statuses), disagreements=len(disagreements),
                                 smb_shares=share_inventory, services=service_inventory,
-                                access_records=access_records)
+                                access_records=access_records, cred1=sccm_result.get("cred1"))
     workspace.write_text_atomic(workspace.root / "results.txt", report_text)
     # Keep a non-destructive historical copy for this scan ID.
     workspace.write_json(workspace.history_root / "scan.json", {"domain": root, "target": target,
@@ -1227,6 +1239,17 @@ def main():
         console.heading("Authenticated Access")
         for line in access_lines:
             console.line(line)
+    cred1_output = sccm_result.get("cred1")
+    if cred1_output:
+        console.line()
+        console.heading("SCCM CRED-1 PXE")
+        for item in cred1_output if isinstance(cred1_output, list) else [cred1_output]:
+            console.line(f"  DP ................ {item.get('dp', 'unknown')}")
+            console.line(f"  PXE ............... {item.get('pxe', 'UNKNOWN')}")
+            console.line(f"  TFTP .............. {item.get('tftp', 'UNKNOWN')}")
+            console.line(f"  Boot metadata ..... {item.get('boot_file') or 'UNKNOWN'}")
+            console.line(f"  Media protection .. {item.get('media_protection', 'UNKNOWN')}")
+            console.line(f"  Secret inspection . {item.get('secret_inspection', 'NOT ATTEMPTED')}")
     console.line()
     console.heading("Findings")
     if not all_findings:

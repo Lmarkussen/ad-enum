@@ -22,3 +22,12 @@ def test_install_builds_source_helper_without_binary_vendoring():
     installer = open("install.sh", encoding="utf-8").read()
     assert "go -C helpers/sccm_pxe build -o \"$repo_dir/.venv/bin/ad-enum-sccm-pxe\" ." in installer
     assert "pipx install --force netexec" in installer
+
+
+def test_cred1_candidate_selection_uses_only_observed_distribution_points():
+    from ad_enum.sccm import cred1_candidates
+
+    assert cred1_candidates({"distribution_points": [
+        {"host": "MECM.sccm.lab"}, {"host": "MECM.sccm.lab"}, {"host": "DP01.sccm.lab"}
+    ]}) == ["MECM.sccm.lab", "DP01.sccm.lab"]
+    assert cred1_candidates({"management_points": [{"host": "MECM.sccm.lab"}]}) == []

@@ -201,6 +201,19 @@ def probe_management_points(management_points, timeout=5):
     return results
 
 
+def cred1_candidates(result):
+    """Return only independently observed distribution-point targets."""
+    result = result if isinstance(result, dict) else {}
+    out = []
+    for item in result.get("distribution_points", []) or []:
+        if not isinstance(item, dict):
+            continue
+        host = item.get("fqdn") or item.get("host") or item.get("name")
+        if host and host not in out:
+            out.append(host)
+    return out
+
+
 def normalize_relayking(data):
     """Keep RelayKing's structured exposure/path results without executing them."""
     if not isinstance(data, dict):
