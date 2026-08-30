@@ -1,4 +1,5 @@
-from ad_enum.dns_enum import merge_into_dns_map, normalize_password_settings, normalize_records, normalize_zones
+from ad_enum.dns_enum import decode_dns_record, merge_into_dns_map, normalize_password_settings, normalize_records, normalize_zones
+import struct
 from ad_enum.gpo import inspect_file, parse_security_settings
 from ad_enum.inventory import parse_netexec_shares
 
@@ -21,6 +22,16 @@ def test_ad_dns_records_merge_into_existing_map_without_overwrite():
 def test_ad_dns_zone_and_record_normalizers():
     assert normalize_zones([{"name": ["lab"]}])[0]["name"] == "lab"
     assert normalize_records([{"zone": "lab", "name": "dc", "recordType": "A", "address": "10.0.0.1"}])[0]["value"] == "10.0.0.1"
+
+
+def test_ad_dns_binary_a_and_srv_records_decode():
+    header = lambda length, kind, ttl=300: struct.pack("<HHBBHIII I", length, kind, 5, 0, 0, 1, ttl, 0, 0)
+    a = decode_dns_record(header(4, 1) + bytes([10, 0, 0, 40]), "dc", "sccm.lab")
+    assert a["type"] == "A" and a["value"] == "10.0.0.40" and a["fqdn"] == "dc.sccm.lab"
+    target = b"\x03_ldap\x04_tcp\x00"
+    srv = decode_dns_record(header(6 + len(target), 33) + struct.pack("<HHH", 0, 100, 389) + target,
+                            "_ldap._tcp", "sccm.lab")
+    assert srv["type"] == "SRV" and "389" in srv["value"]
 
 
 def test_fgpp_normalization_preserves_precedence_and_applies_to():

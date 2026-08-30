@@ -94,9 +94,12 @@ def parse_netexec_shares(text):
             share = re.match(r"\s*([^\s|]+)\s+([^\s|]+)\s+(READ(?:,?WRITE)?)\b", line, re.I)
         if not share:
             share = re.match(r"\s*([^\s|]+)\s+(READ(?:,?WRITE)?)\b", line, re.I)
+        if not share:
+            share = re.search(r"SMB\s+\S+\s+(?P<name>[^\s|]+)\s+(?P<access>READ(?:,?WRITE)?)\b", line, re.I)
         if share and current_host:
-            name = share.group(1)
-            access = (share.group(2) if len(share.groups()) == 2 else share.group(3)).upper().replace(",", "")
+            name = share.groupdict().get("name") or share.group(1)
+            access = share.groupdict().get("access") or (share.group(2) if len(share.groups()) == 2 else share.group(3))
+            access = access.upper().replace(",", "")
             rows.append({"host": current_host["host"], "ip": current_host["ip"],
                          "share": name, "unc": f"\\\\{current_host['host']}\\{name}",
                          "readable": "READ" in access, "writable": "WRITE" in access,

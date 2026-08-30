@@ -262,8 +262,15 @@ def main():
     workspace.write_json(workspace.findings_path("NetworkHound", "inventory.json"),
                          networkhound_result.get("inventory", {}) if isinstance(networkhound_result, dict) else {})
     workspace.write_json(workspace.findings_path("NetworkHound", "dns-map.json"), dns_map)
+    pso_inventory = normalize_password_settings(collector.raw.get("password_settings", []))
+    resultants = []
+    for record in inventory.records.get("users", {}).values():
+        resultant = record.attributes.get("msDS-ResultantPSO")
+        if resultant:
+            resultants.append({"account": record.identifier, "resultant_pso": resultant[0] if isinstance(resultant, list) else resultant,
+                               "privileged": record.identifier in privileged_sids})
     workspace.write_json(workspace.findings_path("PasswordPolicies", "inventory.json"),
-                         normalize_password_settings(collector.raw.get("password_settings", [])))
+                         {"policies": pso_inventory, "resultant_policies": resultants})
     workspace.write_json(workspace.findings_path("PasswordPolicies", "findings.json"), [])
     workspace.write_text(workspace.module_dir("PasswordPolicies") / "findings.txt", "")
     coverage.add("AD DNS / integrated records", "PASS", f"{len(dns_zones)} zone(s), {len(dns_records)} record(s)")
