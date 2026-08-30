@@ -85,3 +85,15 @@ def test_effective_gpo_rights_require_low_privilege_and_honor_deny():
         {"sid": "S-1-5-21-1-2-3-1101", "kind": "deny", "mask": 0x40000000,
          "applies_to_object": True}]}]
     assert analyze_effective_acls(rows, inv) == []
+
+
+def test_effective_acl_names_specific_group_reset_and_spn_rights():
+    inv = DomainInventory()
+    inv.add("users", "S-1-5-21-1-2-3-1101", {"sAMAccountName": "alice", "objectClass": ["user"]}, "native-ldap")
+    rows = [{"target": "svc-admin", "object_class": ["user"], "aces": [
+        {"sid": "S-1-5-21-1-2-3-1101", "kind": "allow", "mask": 0x100,
+         "object_type": "00299570-246d-11d0-a768-00aa006e0529", "applies_to_object": True},
+        {"sid": "S-1-5-21-1-2-3-1101", "kind": "allow", "mask": 0x20,
+         "object_type": "f3a64788-5306-11d1-a9c5-0000f80367c1", "applies_to_object": True}]}]
+    rights = analyze_effective_acls(rows, inv)[0]["effective_rights"]
+    assert "ResetPassword" in rights and "WriteServicePrincipalName" in rights

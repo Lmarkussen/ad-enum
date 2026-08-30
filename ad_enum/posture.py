@@ -119,9 +119,26 @@ def _high_impact_scope(dn):
 
 _GENERIC_WRITE = 0x40000000
 _WRITE_PROPERTY = 0x00000020
+_CONTROL_ACCESS = 0x00000100
+_RESET_PASSWORD = "00299570-246d-11d0-a768-00aa006e0529"
+_MEMBER_ATTRIBUTE = "bf9679c0-0de6-11d0-a285-00aa003049e2"
+_SPN_ATTRIBUTE = "f3a64788-5306-11d1-a9c5-0000f80367c1"
 _DANGEROUS = ((0x10000000, "GenericAll"), (_GENERIC_WRITE, "GenericWrite"),
               (0x00040000, "WriteDacl"), (0x00080000, "WriteOwner"),
               (_WRITE_PROPERTY, "WriteProperty"))
+
+
+def _right_names(mask, ace, row):
+    names = [name for bit, name in _DANGEROUS if mask & bit]
+    object_type = str(ace.get("object_type") or "").lower()
+    target_classes = {str(x).lower() for x in (row.get("object_class") or [])}
+    if mask & _CONTROL_ACCESS and object_type == _RESET_PASSWORD:
+        names.append("ResetPassword")
+    if mask & _WRITE_PROPERTY and object_type == _MEMBER_ATTRIBUTE and "group" in target_classes:
+        names.append("ModifyGroupMembership")
+    if mask & _WRITE_PROPERTY and object_type == _SPN_ATTRIBUTE:
+        names.append("WriteServicePrincipalName")
+    return list(dict.fromkeys(names))
 
 
 def _inventory_maps(inventory):
@@ -197,7 +214,11 @@ def analyze_effective_acls(rows, inventory, *, target_filter=None):
                 else: allowed |= mask
                 evidence.append(ace)
             effective = allowed & ~denied
-            rights = [name for bit, name in _DANGEROUS if effective & bit]
+            rights = []
+            for ace in principal_aces:
+                if ace.get("kind") == "allow":
+                    rights.extend(_right_names(int(ace.get("mask", 0) or 0) & effective, ace, row))
+            rights = list(dict.fromkeys(rights))
             if rights:
                 observations.append({"target": target, "principal_sid": sid,
                                       "principal_context": context, "low_privilege": True,
