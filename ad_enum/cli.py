@@ -706,8 +706,7 @@ def main():
                          and str(x.get("secret_inspection", "")).upper() == "COMPLETE"
                          for x in cred1_results)
         coverage.add("SCCM / CRED-1 deterministic recovery",
-                     "CONFIRMED" if any(x.get("credentials") for x in cred1_results) else
-                     ("COMPLETE" if full_cred1 else "PARTIAL"),
+                     "PASS" if any(x.get("credentials") for x in cred1_results) or full_cred1 else "PARTIAL",
                      "CinderPath adapter completed bounded read/decode path")
         console.complete("SCCM CRED-1 PXE analysis complete")
     else:
@@ -728,7 +727,7 @@ def main():
                              for x in cred1_results)
         if cred1_complete:
             for capability in ("distribution point", "PXE / WDS", "boot metadata", "task-sequence metadata"):
-                coverage.add(f"SCCM / {capability}", "COMPLETE", "validated by CinderPath CRED-1 adapter")
+                coverage.add(f"SCCM / {capability}", "PASS", "validated by CinderPath CRED-1 adapter")
     console.complete("SCCM analysis complete")
     console.activity("Enumerating MSSQL infrastructure...")
     mssql_inventory = normalize_mssql(inventory)
