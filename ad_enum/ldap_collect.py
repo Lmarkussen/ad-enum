@@ -162,11 +162,30 @@ class Collector:
         raw_security_descriptors = []
         try:
             targets = [(root, "domain")]
-            targets.extend((str(x.get("distinguishedName", "")), "identity")
-                           for x in raw_identities
-                           if str(x.get("distinguishedName", "")) and (
-                               "group" in {str(v).lower() for v in x.get("objectClass", [])}
-                               or "computer" in {str(v).lower() for v in x.get("objectClass", [])}))
+            privileged = {"domain admins", "enterprise admins", "administrators", "schema admins",
+                          "account operators", "server operators", "backup operators", "dnsadmins",
+                          "group policy creator owners"}
+            for item in raw_identities:
+                dn = str(item.get("distinguishedName", ""))
+                if not dn:
+                    continue
+                classes = {str(v).lower() for v in item.get("objectClass", [])}
+                name = str((item.get("sAMAccountName") or item.get("cn") or [""])[0]
+                           if isinstance(item.get("sAMAccountName") or item.get("cn") or [""], list)
+                           else (item.get("sAMAccountName") or item.get("cn") or "")).lower()
+                is_privileged_group = "group" in classes and name in privileged
+                uac = item.get("userAccountControl", 0)
+                primary = item.get("primaryGroupID", 0)
+                try: uac, primary = int(uac[0] if isinstance(uac, list) else uac or 0), int(primary[0] if isinstance(primary, list) else primary or 0)
+                except (TypeError, ValueError): uac, primary = 0, 0
+                spns = " ".join(str(v) for v in (item.get("servicePrincipalName") or []))
+                is_dc = ("computer" in classes and
+                         (bool(uac & 0x2000) or primary == 516 or
+                          "OU=DOMAIN CONTROLLERS" in dn.upper() or "ldap/" in spns.lower()))
+                is_sccm = any(token in (name + " " + dn.lower())
+                              for token in ("mecm", "sccm", "sms", "mssql"))
+                if is_privileged_group or is_dc or is_sccm:
+                    targets.append((dn, "identity"))
             seen = set()
             for target_dn, target_kind in targets:
                 if target_dn.lower() in seen:
