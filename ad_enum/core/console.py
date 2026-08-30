@@ -20,7 +20,15 @@ class Console:
         return f"{self.c.get(color, '')}{text}{self.c['reset'] if color else ''}"
 
     def line(self, text=""):
-        print(text, file=self.stream)
+        print(text, file=self.stream, flush=True)
+
+    def activity(self, text):
+        self.line(self.paint(f"[ * ] {text}", "blue"))
+
+    def complete(self, text, state="PASS"):
+        marker = "[ + ]" if state == "PASS" else ("[ ! ]" if state in {"WARNING", "PARTIAL"} else "[ - ]")
+        color = "green" if state == "PASS" else ("yellow" if state in {"WARNING", "PARTIAL"} else "dim")
+        self.line(self.paint(f"{marker} {text}", color))
 
     def heading(self, text):
         self.line(self.paint(text, "cyan"))

@@ -83,7 +83,9 @@ def main():
     collector = Collector(target, a.username, a.password, bind_domain, a.ldaps, a.port,
                           timeout=a.timeout, force_kerb=a.force_kerb)
     try:
+        console.activity("Resolving target...")
         root, _ = collector.preflight()
+        console.complete(f"Target resolved: {target}")
     except Exception as exc:
         failure = translate_kerberos_error(exc) if a.force_kerb else None
         if failure and failure.category != "bad-credentials":
@@ -126,12 +128,20 @@ def main():
         context.dc_hostname = context.auto_config.get("dc_hostname", "")
         if a.verbose: console.debug_line(f"auto-config: {context.auto_config}")
     # Native LDAP is the discovery prerequisite for the multi-host plan.
+    console.activity("Running Native LDAP...")
     root, cas, templates = collector.collect()
+    console.complete("Native LDAP complete")
     context.kerberos_session = collector.kerberos_session
     inventory = native_inventory(collector.raw)
     native_counts = inventory.counts()
     context.targets = build_targets(inventory)
-    external_results, external_diagnostics = execute_external(context, plan, certipy_snapshot=imported_certipy)
+    def report_progress(stage, label, state=None):
+        if stage == "start": console.activity(f"Running {label}...")
+        elif state == "PASS": console.complete(f"{label} complete")
+        elif state in {"FAILED", "PARTIAL"}: console.complete(f"{label} failed — continuing", "WARNING")
+        else: console.complete(f"{label} unavailable — skipped", "SKIPPED")
+    external_results, external_diagnostics = execute_external(
+        context, plan, certipy_snapshot=imported_certipy, progress=report_progress)
     certipy_result = external_results.get("adcs-certipy", {}).get("snapshot") if external_results.get("adcs-certipy", {}).get("status") == "PASS" else None
     certipy = certipy_result or imported_certipy
     source_counts = {"native-ldap": native_counts}
@@ -147,6 +157,7 @@ def main():
     workspace.write_json(workspace.findings_path("NetworkHound", "inventory.json"),
                          networkhound_result.get("inventory", {}) if isinstance(networkhound_result, dict) else {})
     workspace.write_json(workspace.findings_path("NetworkHound", "dns-map.json"), dns_map)
+    console.activity("Checking LDAP security...")
     smb_inventory, smb_findings = [], []
     trust_inventory = normalize_trusts(collector.raw.get("trusts", []))
     workspace.write_json(workspace.findings_path("Trusts", "inventory.json"), trust_inventory)
@@ -177,6 +188,7 @@ def main():
     workspace.write_text(workspace.module_dir("LDAPSecurity") / "findings.txt",
                          "\n".join(f"[{x['category']}] {x['title']}" for x in ldap_security_findings) +
                          ("\n" if ldap_security_findings else ""))
+    console.complete("LDAP security analysis complete")
     findings, comparisons, coverage, dangling, duplicates = scan(cas, templates, certipy=certipy)
     exposures = roastable(inventory)
     delegation_records = enumerate_delegation(inventory)
@@ -247,6 +259,7 @@ def main():
             current_scan=workspace.scan_id).as_dict())
     workspace.write_json(workspace.findings_path("SMB", "findings.json"), smb_findings)
     workspace.write_text(workspace.module_dir("SMB") / "findings.txt", "\n".join(f"[{x['category']}] {x['title']}" for x in smb_findings) + ("\n" if smb_findings else ""))
+    console.activity("Enumerating SCCM...")
     sccm_result = discover_sccm(inventory, collector.raw, dns_map)
     sccm_result["endpoint_probes"] = probe_management_points(sccm_result.get("management_points", []), a.timeout)
     for mp in sccm_result.get("management_points", []):
@@ -264,12 +277,14 @@ def main():
     workspace.write_json(workspace.findings_path("SCCM", "endpoints.json"), sccm_result.get("endpoint_probes", []))
     workspace.write_json(workspace.findings_path("SCCM", "pxe.json"), sccm_result.get("pxe", {}))
     coverage.add("SCCM / infrastructure discovery", "PASS", f"{len(sccm_result['hosts'])} candidate host(s)")
+    console.complete("SCCM analysis complete")
     expected_acl_principals = {
         str(record.identifier) for record in inventory.records.get("users", {}).values()
         if str((record.attributes.get("sAMAccountName", [""])[0]
                 if isinstance(record.attributes.get("sAMAccountName", [""]), list)
                 else record.attributes.get("sAMAccountName", ""))).lower() == str(a.username).lower()
     }
+    console.activity("Inspecting GPOs and SYSVOL...")
     gpos = attach_gpo_links(normalize_gpos(collector.raw.get("gpos", [])),
                             collector.raw.get("gpo_links", []))
     gpo_acls = normalize_gpo_acls(collector.raw.get("gpos", []))
@@ -318,6 +333,7 @@ def main():
     coverage.add("GPO / SYSVOL targeted inspection", gpo_status, f"{len(sysvol.get('files', []))} file(s)")
     netlogon_status = {"PASS": "PASS", "FAILED": "FAILED", "UNAVAILABLE": "NOT AVAILABLE"}.get(netlogon.get("status"), "FAILED")
     coverage.add("GPO / NETLOGON targeted inventory", netlogon_status, f"{len(netlogon.get('files', []))} file(s)")
+    console.complete("GPO analysis complete", "PASS" if gpo_status == "PASS" else "WARNING")
     laps_inventory = normalize_laps(collector.raw.get("laps_schema", []), inventory)
     workspace.write_json(workspace.findings_path("LAPS", "inventory.json"), laps_inventory)
     workspace.write_json(workspace.findings_path("LAPS", "findings.json"), [])
@@ -383,6 +399,8 @@ def main():
     workspace.write_text(workspace.module_dir("ACL") / "findings.txt",
                          "\n".join(f"[{x['category']}] {x['title']}" for x in acl_findings) +
                          ("\n" if acl_findings else ""))
+    console.activity("Analyzing ACLs...")
+    console.complete("ACL analysis complete")
     coverage.add("SMB / signing posture", "PASS" if smb_inventory else "NOT CHECKED", f"{len(smb_inventory)} host(s)")
     coverage.add("LDAP / signing and channel binding", "NOT CHECKED", "posture unknown; no direct safe proof")
     coverage.add("Trusts / LDAP inventory", "PASS", f"{len(trust_inventory)} trust(s)")

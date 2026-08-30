@@ -16,13 +16,15 @@ ADAPTERS = {
     "networkhound": NetworkHoundAdapter,
 }
 
-def execute_external(context, plan, *, certipy_snapshot=None):
+def execute_external(context, plan, *, certipy_snapshot=None, progress=None):
     results, diagnostics = {}, []
     for item in plan:
         adapter_type = ADAPTERS.get(item.spec.id)
         if adapter_type is None or item.spec.id in {"ldap", "adcs-native"}: continue
+        if progress: progress("start", item.spec.name)
         if item.status.value != "READY":
             results[item.spec.id] = {"status": item.status.value, "reason": item.reason}
+            if progress: progress("end", item.spec.name, item.status.value)
             continue
         try:
             if item.spec.id == "adcs-certipy" and certipy_snapshot is not None:
@@ -34,9 +36,11 @@ def execute_external(context, plan, *, certipy_snapshot=None):
                     ldaps=context.ldaps, force_kerb=context.force_kerb)}
             else:
                 results[item.spec.id] = {"status": "PASS", "result": adapter_type().run(context=context)}
+            if progress: progress("end", item.spec.name, "PASS")
         except Exception as exc:
             results[item.spec.id] = {"status": "FAILED", "reason": f"{type(exc).__name__}: {exc}"}
             diagnostics.append(f"{item.spec.id}: {type(exc).__name__}: {exc}")
             context.workspace.write_json(context.workspace.raw_dir(item.spec.outputs[0]) / "failure.json",
                                          results[item.spec.id])
+            if progress: progress("end", item.spec.name, "FAILED")
     return results, diagnostics
