@@ -34,26 +34,22 @@ def report():
     print("\nExternal tools")
     print("\nRequired Tools")
     tools = [("Certipy", "certipy", "certipy-ad"), ("BloodHound", "bloodhound-python", "bloodhound"),
-             ("ldapdomaindump", "ldapdomaindump", "ldapdomaindump"), ("NetExec", "nxc", "netexec")]
+             ("LDAPDomainDump", "ldapdomaindump", "ldapdomaindump"), ("NetExec", "nxc", "netexec"),
+             ("Impacket", "impacket-smbclient", "impacket")]
     statuses = {}
     for label, command, package in tools:
         status, version = _tool(command, package=package)
         statuses[label] = status
         suffix = f" ({version})" if version else ""
         print(f"  {label:<21} {status}{suffix}")
-    print("\nSupporting Tools")
-    status, version = _tool("impacket-smbclient")
-    if status == "MISSING" and importlib.util.find_spec("impacket"):
-        status, version = "AVAILABLE", "Python package"
-    suffix = f" ({version})" if version else ""
-    statuses["Impacket"] = status
-    print(f"  {'Impacket':<21} {status}{suffix}")
-    if any(statuses[x] == "MISSING" for x in ("Certipy", "BloodHound", "ldapdomaindump", "NetExec")):
+    if statuses["Impacket"] == "MISSING" and importlib.util.find_spec("impacket"):
+        statuses["Impacket"] = "AVAILABLE"
+    if any(statuses[x] == "MISSING" for x in ("Certipy", "BloodHound", "LDAPDomainDump", "NetExec", "Impacket")):
         print("\nWARNING: default installation is incomplete")
     print("\nModule Capability")
     print("  ADCS native .......... AVAILABLE")
     print(f"  ADCS Certipy ......... {'AVAILABLE' if statuses['Certipy'] == 'AVAILABLE' else 'UNAVAILABLE'}")
     print(f"  BloodHound ........... {'AVAILABLE' if statuses['BloodHound'] == 'AVAILABLE' else 'UNAVAILABLE'}")
-    print(f"  LDAPDomainDump ....... {'AVAILABLE' if statuses['ldapdomaindump'] == 'AVAILABLE' else 'UNAVAILABLE'}")
+    print(f"  LDAPDomainDump ....... {'AVAILABLE' if statuses['LDAPDomainDump'] == 'AVAILABLE' else 'UNAVAILABLE'}")
     print(f"  NetExec .............. {'AVAILABLE' if statuses['NetExec'] == 'AVAILABLE' else 'UNAVAILABLE'}")
     return 0

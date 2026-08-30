@@ -69,11 +69,9 @@ if [[ "$mode" != minimal ]]; then
     say "Installing $label"; run_logged "$label installation" pipx install --force "$package"
     ok "$label installed"
   done
-  if command -v nxc >/dev/null 2>&1; then ok "NetExec installed"; else warn "NetExec is not available; default toolset is incomplete"; fi
-fi
-if [[ "$mode" == full ]]; then
   say "Installing Impacket"; run_logged "Impacket installation" pipx install --force impacket
   ok "Impacket installed"
+  if command -v nxc >/dev/null 2>&1; then ok "NetExec installed"; else warn "NetExec is not available; default toolset is incomplete"; fi
 fi
 
 say "Running AD-Enum doctor"
