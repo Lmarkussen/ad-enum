@@ -71,7 +71,7 @@ def _tds_probe(address, port, *, timeout, connector):
     payload = bytes.fromhex(
         "000015000601001b000102001c000c0300280004ff"
         "080001550000004d5353514c5365727665720001000000")
-    packet = bytes([0x12, 0x00]) + (len(payload) + 8).to_bytes(2, "big") + b"\x00\x00\x01\x00" + payload
+    packet = bytes([0x12, 0x01]) + (len(payload) + 8).to_bytes(2, "big") + b"\x00\x00\x00\x00" + payload
     connection = connector((address, port), timeout=timeout)
     try:
         connection.sendall(packet)
