@@ -68,6 +68,7 @@ if [[ "$mode" != minimal ]] && ! command -v pipx >/dev/null 2>&1; then apt_packa
 if [[ "$mode" != minimal ]] && ! command -v nxc >/dev/null 2>&1; then apt_packages+=(netexec); fi
 if [[ "$mode" != minimal ]] && ! command -v kinit >/dev/null 2>&1; then apt_packages+=(krb5-user); fi
 if [[ "$mode" != minimal ]] && ! command -v go >/dev/null 2>&1; then apt_packages+=(golang-go); fi
+if [[ "$mode" != minimal ]] && { [[ ! -f /usr/include/pcap/pcap.h ]] && [[ ! -f /usr/include/pcap.h ]]; }; then apt_packages+=(libpcap-dev); fi
 if ((${#apt_packages[@]})); then
   command -v sudo >/dev/null 2>&1 || { fail "Missing system packages: ${apt_packages[*]} (sudo unavailable)"; exit 1; }
   CURRENT_STAGE="Checking sudo access"
@@ -134,6 +135,11 @@ if [[ "$mode" != minimal ]]; then
       rm -rf -- "$cinderpath_source"
     fi
     mkdir -p "$(dirname "$cinderpath_source")"
+    if [[ ! -f /usr/include/pcap/pcap.h && ! -f /usr/include/pcap.h ]]; then
+      CURRENT_STAGE="Checking CinderPath libpcap development headers"
+      fail "CinderPath build prerequisite missing: libpcap development headers (install libpcap-dev)"
+      exit 1
+    fi
     if (( cinderpath_checkout_ok )); then
       run_logged "Updating CinderPath source" timeout 120s git -C "$cinderpath_source" remote set-url origin "$cinderpath_url"
       run_logged "Fetching current CinderPath source" timeout 120s git -C "$cinderpath_source" fetch --depth 1 origin
