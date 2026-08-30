@@ -211,7 +211,8 @@ def main():
     workspace.write_json(workspace.findings_path("GPO", "policies.json"), {"status": sysvol.get("status"), "files": [{k: v for k, v in x.items() if k != "content"} for x in sysvol.get("files", [])]})
     workspace.write_json(workspace.findings_path("GPO", "findings.json"), gpo_findings)
     coverage.add("GPO / LDAP inventory", "PASS", f"{len(gpos)} group policy object(s)")
-    coverage.add("GPO / SYSVOL targeted inspection", sysvol.get("status", "FAILED"), f"{len(sysvol.get('files', []))} file(s)")
+    gpo_status = {"PASS": "PASS", "FAILED": "FAILED", "UNAVAILABLE": "NOT AVAILABLE"}.get(sysvol.get("status"), "FAILED")
+    coverage.add("GPO / SYSVOL targeted inspection", gpo_status, f"{len(sysvol.get('files', []))} file(s)")
     relay_findings = []
     relay_result = external_results.get("relay", {})
     if relay_result.get("status") == "PASS":
