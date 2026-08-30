@@ -74,3 +74,21 @@ def test_netexec_access_uses_service_label_when_protocol_is_transport(tmp_path, 
     ])
     assert calls and calls[0][1:3] == ["winrm", "10.0.0.5"]
     assert records[0]["protocol"] == "WINRM"
+
+
+def test_netexec_access_skips_closed_service_observations(tmp_path, monkeypatch):
+    adapter = NetExecAdapter()
+    calls = []
+    monkeypatch.setattr(adapter, "resolve_executable", lambda: "/usr/bin/nxc")
+    monkeypatch.setattr(adapter, "access_help", lambda protocol: "--no-progress")
+    monkeypatch.setattr(adapter, "execute", lambda command, **kwargs: calls.append(command))
+    context = SimpleNamespace(
+        auth=SimpleNamespace(username="user", password="secret"), domain="example",
+        force_kerb=False, timeout=5, workspace=SimpleNamespace(raw_dir=lambda _: tmp_path),
+        tool_output_callback=None)
+    records = adapter.run_access_checks(context=context, targets=[
+        {"host": "server.example", "ip": "10.0.0.5", "protocol": "tcp",
+         "service": "SSH", "port": 22, "state": "CLOSED"}
+    ])
+    assert records == []
+    assert calls == []

@@ -667,8 +667,8 @@ def main():
         cred1_results = []
         cinder_executable = cinderpath_path()
         setup_decision = None
-        for target in cred1_targets[:4]:
-            runtime = check_cred1_runtime(target, cinder_executable)
+        for cred1_target in cred1_targets[:4]:
+            runtime = check_cred1_runtime(cred1_target, cinder_executable)
             if runtime.get("capability_fixable") and setup_decision is None:
                 if sys.stdin.isatty() and sys.stdout.isatty():
                     console.line("SCCM/PXE credential checks require packet-capture capabilities.")
@@ -682,20 +682,20 @@ def main():
                             setup_decision = False
                             runtime["setup_error"] = reason
                         else:
-                            runtime = check_cred1_runtime(target, cinder_executable)
+                            runtime = check_cred1_runtime(cred1_target, cinder_executable)
                             runtime["setup"] = reason
                 else:
                     setup_decision = False
             if setup_decision is False and runtime.get("capability_fixable"):
                 runtime["reasons"].append("setup declined or noninteractive execution")
             if runtime["status"] != "READY":
-                cred1_results.append({"dp": target, "pxe": "NOT TESTED", "wds": "NOT TESTED",
+                cred1_results.append({"dp": cred1_target, "pxe": "NOT TESTED", "wds": "NOT TESTED",
                                       "tftp": "NOT TESTED", "media_protection": "UNKNOWN",
                                       "secret_inspection": "NOT ATTEMPTED", "evidence": runtime["reasons"],
                                       "sources": ["CRED-1 execution-host prerequisite check"],
                                       "runtime": runtime})
             else:
-                cred1_results.append(run_cinderpath_cred1(target, timeout=min(a.timeout, 60),
+                cred1_results.append(run_cinderpath_cred1(cred1_target, timeout=min(a.timeout, 60),
                                                          executable=cinder_executable))
         sccm_result["cred1"] = cred1_results[0] if len(cred1_results) == 1 else cred1_results
         workspace.write_json(workspace.findings_path("SCCM", "cred1.json"), sccm_result["cred1"])

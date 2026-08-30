@@ -68,6 +68,9 @@ class NetExecAdapter(ToolAdapter):
         protocol_map = {"SMB": "smb", "LDAP": "ldap", "SSH": "ssh",
                         "RDP": "rdp", "WINRM": "winrm", "MSSQL": "mssql"}
         for item in targets or []:
+            observed_state = str(item.get("state", "")).upper()
+            if observed_state and observed_state not in {"OPEN", "CONFIRMED"}:
+                continue
             # Service inventory records retain the transport in ``protocol``
             # (for example ``tcp``), while the expected service is in
             # ``service`` (for example ``WinRM HTTP``). Prefer the service
