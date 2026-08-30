@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import tempfile
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from ..core.provenance import Provenance
@@ -104,6 +105,8 @@ class CertipyAdapter(ToolAdapter):
             # endpoint used by the native collector and is explicit here so a
             # CA scan does not fail merely because the lab has no usable LDAPS
             # certificate.  Operators can override this via extra_args.
+            if executable == "certipy":
+                executable = shutil.which("certipy") or shutil.which("certipy-ad") or executable
             cmd = [executable, "find", "-u", account, "-json", "-output", prefix]
             if force_kerb: cmd.append("-k")
             cmd += ["-ldap-scheme", "ldaps" if ldaps else "ldap",

@@ -5,6 +5,9 @@ from pathlib import Path
 
 def find_executable(name):
     path = shutil.which(name)
+    # Debian/Kali packages expose Certipy as certipy-ad while pipx commonly
+    # installs the shorter certipy launcher.  Treat these as one capability.
+    if not path and name == "certipy": path = shutil.which("certipy-ad")
     if path:
         return path
     candidate = Path.home() / ".local" / "bin" / name

@@ -145,3 +145,20 @@ The current live lab state and ESC1/ESC7 regression are unchanged.  Positive
 lab fixtures for these new account/delegation checks have not been created in
 this pass; tests use self-contained normalized records.  Live validation still
 requires the authorized lab credentials and should be recorded separately.
+
+## Live validation baseline (2026-08-30)
+
+The read-only SCCM.LAB baseline observed no AS-REP-positive users, no enabled
+`PASSWD_NOTREQD` accounts, no constrained delegation, no RBCD, and no visible
+gMSAs.  SPN enumeration found disabled `krbtgt` and enabled `sccm-sql`; the
+same identities and SPNs were returned by native LDAP, a safe NetExec LDAP
+query, and BloodHound.  The only unconstrained-delegation record was the
+expected domain controller, which is retained as context rather than emitted
+as a non-DC finding.
+
+No positive account/delegation fixture was created because the supplied
+identity lacks the directory rights needed to create the lab-only objects.
+NetExec ticket/hash-output modes were not used.  Forced-Kerberos validation
+passed native LDAP and BloodHound; Certipy could not emit JSON without a
+usable cache, NetExec failed in cache-only mode, and LDAPDomainDump is
+explicitly unsupported under the forced-Kerberos policy.

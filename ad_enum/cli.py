@@ -30,7 +30,7 @@ def main():
     if argv and argv[0] == "scan":
         argv = argv[1:]
     p = argparse.ArgumentParser(description="Enumerate AD CS and explain ESC1 candidates")
-    p.add_argument("--dc", "--dc-ip", dest="dc"); p.add_argument("--port", type=int, default=None); p.add_argument("-domain", "--domain", required=True)
+    p.add_argument("--dc", "--dc-ip", "-dc-ip", dest="dc"); p.add_argument("--port", type=int, default=None); p.add_argument("-domain", "--domain", required=True)
     p.add_argument("-u", "--username", required=True); p.add_argument("-p", "--password", help="omit to prompt")
     p.add_argument("--ldaps", action="store_true"); p.add_argument("--force-kerb", action="store_true")
     p.add_argument("--auto-config", action="store_true"); p.add_argument("--verbose", "--debug", action="store_true")
