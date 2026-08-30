@@ -6,7 +6,8 @@ from .ldap_collect import Collector
 from .adcs import scan
 from .adapters.certipy import CertipyAdapter
 from .core.workspace import ScanWorkspace, canonical_domain
-from .core.autoconfig import inspect as inspect_autoconfig
+from .core.autoconfig import inspect as inspect_autoconfig, sync_time as sync_clock
+from .core.kerberos_errors import translate_kerberos_error
 from .core.context import AuthContext, ScanContext
 from .core.planner import ExecutionPlanner
 from .core.findings import NormalizedFinding
@@ -34,7 +35,8 @@ def main():
     p.add_argument("--dc", "--dc-ip", "-dc-ip", dest="dc"); p.add_argument("--port", type=int, default=None); p.add_argument("-domain", "--domain", required=True)
     p.add_argument("-u", "--username", required=True); p.add_argument("-p", "--password", help="omit to prompt")
     p.add_argument("--ldaps", action="store_true"); p.add_argument("--force-kerb", action="store_true")
-    p.add_argument("--auto-config", action="store_true"); p.add_argument("--verbose", "--debug", action="store_true")
+    p.add_argument("--auto-config", action="store_true"); p.add_argument("--sync-time", action="store_true")
+    p.add_argument("--verbose", "--debug", action="store_true")
     p.add_argument("--no-color", action="store_true")
     p.add_argument("--timeout", type=float, default=10)
     p.add_argument("--modules", default="all", help="comma-separated modules (default: all read-only collectors)")
@@ -53,13 +55,36 @@ def main():
         bind_domain = a.domain
     console.line("AD-Enum")
     console.line(); console.line("Checking credentials...")
+    auto_state = None
+    if a.auto_config or a.sync_time:
+        auto_state = inspect_autoconfig(a.dc or target, a.domain)
+        if a.sync_time:
+            before = auto_state.get("skew_human", auto_state.get("skew_seconds", "unknown"))
+            console.line(f"Time: current clock difference {before}")
+            sync_state = sync_clock(a.dc or target)
+            if sync_state.get("status") != "SYNCED":
+                console.status("Time synchronization failed", "FAILED")
+                console.line("  Use --verbose for synchronization diagnostics.")
+                if a.verbose: console.debug_line(str(sync_state))
+                return 2
+            auto_state = inspect_autoconfig(a.dc or target, a.domain)
+            console.line(f"Time: synchronized; clock difference {auto_state.get('skew_human', 'unknown')}")
+        elif a.force_kerb and auto_state.get("skew_seconds", 0) and abs(auto_state["skew_seconds"]) > 300:
+            console.status(f"Kerberos clock skew detected: {auto_state.get('skew_human', 'too large')}", "WARNING")
+            console.line("  Re-run with --sync-time.")
     collector = Collector(target, a.username, a.password, bind_domain, a.ldaps, a.port,
                           timeout=a.timeout, force_kerb=a.force_kerb)
     try:
         root, _ = collector.preflight()
     except Exception as exc:
-        console.status("Credentials Invalid", "INVALID")
-        if a.verbose: console.debug_line(f"preflight failed: {type(exc).__name__}: {exc}")
+        failure = translate_kerberos_error(exc) if a.force_kerb else None
+        if failure and failure.category != "bad-credentials":
+            console.status(failure.message, "FAILED")
+            if failure.hint: console.line(f"  {failure.hint}")
+            if a.verbose: console.debug_line(f"Raw Kerberos error: {failure.raw}")
+        else:
+            console.status("Credentials Invalid", "INVALID")
+            if a.verbose: console.debug_line(f"preflight failed: {type(exc).__name__}: {exc}")
         return 2
     if not ipaddress.ip_address(a.domain) if False else False:
         pass
@@ -88,8 +113,8 @@ def main():
                           ldaps=a.ldaps, force_kerb=a.force_kerb,
                           auto_config={"requested": a.auto_config},
                           kerberos_session=collector.kerberos_session)
-    if a.auto_config:
-        context.auto_config = inspect_autoconfig(a.dc or target, workspace.domain)
+    if a.auto_config or a.sync_time:
+        context.auto_config = auto_state or inspect_autoconfig(a.dc or target, workspace.domain)
         context.dc_hostname = context.auto_config.get("dc_hostname", "")
         if a.verbose: console.debug_line(f"auto-config: {context.auto_config}")
     # Native LDAP is the discovery prerequisite for the multi-host plan.
