@@ -510,7 +510,9 @@ def main():
             finding_id=f"gpo:{item['rule']}:{item['gpo'].get('guid')}:{item['file']}",
             category="GPO", rule=item["rule"], title=item["title"],
             affected_object=item["gpo"].get("guid", item["file"]), domain=workspace.domain,
-            sources=[{"source": "sysvol", "observed": True}], evidence=item["evidence"],
+            sources=[{"source": "sysvol", "observed": True}],
+            evidence={**item["evidence"], "file": item.get("file"), "account": item.get("account"),
+                      "gpo": item.get("gpo", {}).get("display_name")},
             status="single-source", priority="high", workspace_artifacts=["GPO/findings.json"],
             first_seen_scan=workspace.scan_id, current_scan=workspace.scan_id)
         item["normalized"] = gpo_finding.as_dict()
