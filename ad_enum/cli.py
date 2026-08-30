@@ -301,8 +301,18 @@ def main():
         rights = ", ".join(observation["effective_rights"])
         is_gpo = observation in gpo_acl_observations
         category, rule = ("GPO", "gpo-modify") if is_gpo else ("ACL", "high-value-right")
-        title = (f"Low-privilege principal can modify GPO — {acl_target}" if is_gpo
-                 else f"Low-privilege principal has dangerous rights — {acl_target}")
+        if is_gpo:
+            title = f"Low-privilege principal can modify GPO — {acl_target}"
+        else:
+            right_title = {
+                "ModifyGroupMembership": "modify group membership",
+                "ResetPassword": "reset password",
+                "WriteServicePrincipalName": "write servicePrincipalName",
+                "WriteDacl": "modify permissions",
+                "WriteOwner": "take ownership",
+            }
+            labels = [right_title.get(x, x) for x in observation["effective_rights"]]
+            title = f"Low-privilege principal can {', '.join(labels)} — {acl_target}"
         acl_findings.append(NormalizedFinding(
             finding_id=f"{category.lower()}:{rule}:{acl_target}:{observation['principal_sid']}",
             category=category, rule=rule, title=title, affected_object=acl_target,

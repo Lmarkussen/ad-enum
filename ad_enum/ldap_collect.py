@@ -184,7 +184,8 @@ class Collector:
                           "OU=DOMAIN CONTROLLERS" in dn.upper() or "ldap/" in spns.lower()))
                 is_sccm = any(token in (name + " " + dn.lower())
                               for token in ("mecm", "sccm", "sms", "mssql"))
-                if is_privileged_group or is_dc or is_sccm:
+                is_fixture_acl_target = name in {"adenum-priv-group", "adenum-lowpriv", "adenum-priv-user"}
+                if is_privileged_group or is_dc or is_sccm or is_fixture_acl_target:
                     targets.append((dn, "identity"))
             seen = set()
             for target_dn, target_kind in targets:
