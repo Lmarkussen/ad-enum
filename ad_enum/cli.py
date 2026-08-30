@@ -645,7 +645,7 @@ def main():
         if share.get("writable") and not is_standard_admin_share(share.get("share")):
             smb_findings.append(NormalizedFinding(
                 finding_id=f"smb:writable-share:{share.get('ip')}:{share.get('share')}", category="SMB",
-                rule="writable-share", title=f"Low-privilege writable share — {share.get('host') or share.get('ip')}\\{share.get('share')}",
+                rule="writable-share", title=f"Writable SMB share — {share.get('host') or share.get('ip')}\\{share.get('share')}",
                 affected_object=share.get("unc", share.get("share", "unknown")), domain=workspace.domain,
                 sources=[{"source": source, "observed": True} for source in share.get("sources", [])],
                 evidence={"share": share, "impact": "Low-privileged users can modify share content"},
@@ -756,7 +756,7 @@ def main():
                          [x for x in mssql_inventory if x.get("sccm")])
     workspace.write_json(workspace.findings_path("MSSQL", "findings.json"), [])
     workspace.write_text(workspace.module_dir("MSSQL") / "findings.txt", "")
-    coverage.add("MSSQL / SPN instance inventory", "PASS" if mssql_inventory else "PARTIAL",
+    coverage.add("MSSQL / SPN instance inventory", "PASS",
                  f"{len(mssql_inventory)} instance candidate(s)")
     console.complete("MSSQL analysis complete")
     console.activity("Enumerating DFS infrastructure...")
@@ -776,12 +776,21 @@ def main():
     service_targets.extend({"host": x.get("host"), "ip": x.get("ip")} for x in smb_inventory)
     service_ports = dict(DEFAULT_SERVICES)
     service_ports.update({int(x["port"]): "MSSQL" for x in mssql_inventory if x.get("port")})
+    # SPN publication is useful corroboration but is not required for a
+    # known SQL host. Probe standard TDS for explicitly named SQL targets.
+    if any("mssql" in str(x.get("host") or x.get("fqdn") or x.get("hostname") or "").lower()
+           for x in service_targets if isinstance(x, dict)):
+        service_ports[1433] = "MSSQL"
     service_probes = probe_known_services(service_targets, ports=service_ports,
                                           timeout=min(a.timeout, 2), max_hosts=64)
     service_inventory.extend(service_probes)
     service_inventory = sorted({(x.get("host"), x.get("service"), x.get("port")): x
                                 for x in service_inventory}.values(),
                                key=lambda x: (str(x.get("host", "")).lower(), str(x.get("service", "")), x.get("port") or 0))
+    tds_observations = [x for x in service_inventory if str(x.get("service", "")).upper() == "MSSQL"]
+    coverage.add("MSSQL / TDS PRELOGIN", "PASS" if tds_observations else "NOT TESTED",
+                 f"{sum(x.get('tds') == 'CONFIRMED' for x in tds_observations)} confirmed endpoint(s); "
+                 f"{len(tds_observations)} candidate host(s) probed")
     workspace.write_json(workspace.findings_path("Services", "inventory.json"), service_inventory)
     workspace.write_json(workspace.findings_path("Services", "findings.json"), [])
     workspace.write_text(workspace.module_dir("Services") / "findings.txt", "")
@@ -896,7 +905,8 @@ def main():
     coverage.add("GPO / SYSVOL targeted inspection", gpo_status, f"{len(sysvol.get('files', []))} file(s)")
     netlogon_status = {"PASS": "PASS", "FAILED": "FAILED", "UNAVAILABLE": "NOT AVAILABLE"}.get(netlogon.get("status"), "FAILED")
     coverage.add("GPO / NETLOGON targeted inventory", netlogon_status, f"{len(netlogon.get('files', []))} file(s)")
-    coverage.add("GPO / security settings", "PARTIAL", f"{len(gpo_security_settings)} setting observation(s)")
+    coverage.add("GPO / security settings", "PASS" if gpo_status == "PASS" else "PARTIAL",
+                 f"{len(gpo_security_settings)} setting observation(s)")
     console.complete("GPO analysis complete", "PASS" if gpo_status == "PASS" else "WARNING")
     laps_inventory = normalize_laps(collector.raw.get("laps_schema", []), inventory)
     workspace.write_json(workspace.findings_path("LAPS", "inventory.json"), laps_inventory)
