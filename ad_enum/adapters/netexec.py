@@ -68,7 +68,13 @@ class NetExecAdapter(ToolAdapter):
         protocol_map = {"SMB": "smb", "LDAP": "ldap", "SSH": "ssh",
                         "RDP": "rdp", "WINRM": "winrm", "MSSQL": "mssql"}
         for item in targets or []:
-            service_name = str(item.get("protocol", item.get("service", ""))).upper()
+            # Service inventory records retain the transport in ``protocol``
+            # (for example ``tcp``), while the expected service is in
+            # ``service`` (for example ``WinRM HTTP``). Prefer the service
+            # label whenever the protocol field is only a transport marker.
+            service_name = str(item.get("protocol", "")).upper()
+            if service_name in {"", "TCP", "UDP", "HTTP", "HTTPS"}:
+                service_name = str(item.get("service", "")).upper()
             # NetExec's LDAP adapter has no advertised LDAPS mode in the
             # installed version; do not silently turn an LDAPS observation
             # into an unencrypted or incorrectly configured auth attempt.

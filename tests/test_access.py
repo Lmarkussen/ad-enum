@@ -1,5 +1,6 @@
 from ad_enum.access import from_netexec_hosts, merge_access, normalize_access, parse_netexec_auth
 from ad_enum.adapters.netexec import NetExecAdapter
+from types import SimpleNamespace
 
 
 def test_access_separates_authentication_from_privilege():
@@ -50,3 +51,26 @@ def test_netexec_access_command_preserves_nondefault_port():
         protocol="mssql", username="user", password="secret", target="10.0.0.5",
         port=1444, help_text="--port PORT")
     assert command[-2:] == ["--port", "1444"]
+
+
+def test_netexec_access_uses_service_label_when_protocol_is_transport(tmp_path, monkeypatch):
+    adapter = NetExecAdapter()
+    calls = []
+    monkeypatch.setattr(adapter, "resolve_executable", lambda: "/usr/bin/nxc")
+    monkeypatch.setattr(adapter, "access_help", lambda protocol: "--no-progress --no-bruteforce")
+
+    def execute(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(stdout="WINRM target 5985 [+] user", stderr="", returncode=0)
+
+    monkeypatch.setattr(adapter, "execute", execute)
+    context = SimpleNamespace(
+        auth=SimpleNamespace(username="user", password="secret"), domain="example",
+        force_kerb=False, timeout=5, workspace=SimpleNamespace(raw_dir=lambda _: tmp_path),
+        tool_output_callback=None)
+    records = adapter.run_access_checks(context=context, targets=[
+        {"host": "server.example", "ip": "10.0.0.5", "protocol": "tcp",
+         "service": "WinRM HTTP", "port": 5985}
+    ])
+    assert calls and calls[0][1:3] == ["winrm", "10.0.0.5"]
+    assert records[0]["protocol"] == "WINRM"
