@@ -31,7 +31,7 @@ def cinderpath_capability(executable=None):
     except (OSError, subprocess.TimeoutExpired) as exc:
         return {"status": "TOOL FAILURE", "reason": f"{type(exc).__name__}: {exc}"}
     text = (result.stdout or "") + (result.stderr or "")
-    if result.returncode or "CRED-1" not in text or "--format" not in text:
+    if result.returncode or "--format" not in text:
         return {"status": "NOT TESTED", "reason": "CinderPath lacks required structured CRED-1 output"}
     return {"status": "READY", "version_help": text[:2000]}
 

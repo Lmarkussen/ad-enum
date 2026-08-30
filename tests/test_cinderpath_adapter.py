@@ -30,6 +30,16 @@ def test_cinderpath_adapter_missing_tool_is_explicit(tmp_path):
     assert "FileNotFoundError" in result["errors"][0]
 
 
+def test_cinderpath_capability_accepts_help_without_echoing_technique(tmp_path):
+    from ad_enum.cinderpath_adapter import cinderpath_capability
+
+    tool = tmp_path / "cinderpath"
+    tool.write_text("#!/bin/sh\nprintf '%s\\n' 'Usage: cinderpath assess' '      --format string'\n",
+                    encoding="utf-8")
+    tool.chmod(tool.stat().st_mode | stat.S_IXUSR)
+    assert cinderpath_capability(str(tool))["status"] == "READY"
+
+
 def test_cinderpath_path_finds_repository_virtualenv_binary(tmp_path, monkeypatch):
     binary = tmp_path / ".venv" / "bin" / "cinderpath"
     binary.parent.mkdir(parents=True)
