@@ -171,8 +171,8 @@ def _principal_is_low_priv(sid, inventory, maps, seen=None):
     name = str(record.attributes.get("sAMAccountName") or record.attributes.get("name") or "").lower()
     privileged = {"domain admins", "enterprise admins", "administrators", "schema admins",
                   "account operators", "server operators", "backup operators", "dnsadmins",
-                  "group policy creator owners", "domain controllers"}
-    if name in privileged or sid.rsplit("-", 1)[-1] in {"512", "519", "544", "548", "549", "550"}:
+                  "group policy creator owners", "domain controllers", "cert publishers"}
+    if name in privileged or sid.rsplit("-", 1)[-1] in {"512", "517", "519", "544", "548", "549", "550"}:
         return False, "expected-privileged"
     classes = {str(x).lower() for x in (record.attributes.get("objectClass") or [])}
     if "user" in classes or "computer" in classes:
