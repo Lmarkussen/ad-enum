@@ -7,6 +7,35 @@ It never reads credentials artifacts and never creates command/shell actions.
 
 AUTH_STATES = {"AUTHENTICATED", "DENIED", "AUTH ERROR", "TIMEOUT", "TOOL FAILURE",
                "NOT TESTED", "NOT APPLICABLE", "PROTOCOL UNAVAILABLE", "UNKNOWN"}
+ACCESS_PROTOCOLS = ("SMB", "LDAP", "SSH", "RDP", "WINRM", "MSSQL")
+
+
+def observed_access_protocol(item):
+    """Map a service observation to the safe NetExec protocol name."""
+    item = item if isinstance(item, dict) else {}
+    label = str(item.get("protocol", "")).upper()
+    if label in {"", "TCP", "UDP", "HTTP", "HTTPS"}:
+        label = str(item.get("service", "")).upper()
+    if label == "LDAPS":
+        return ""
+    return next((protocol for protocol in ACCESS_PROTOCOLS if protocol in label), "")
+
+
+def filter_redundant_access_targets(targets, existing_records):
+    """Avoid repeating SMB/LDAP auth already established by collectors."""
+    known = set()
+    for record in existing_records or []:
+        item = normalize_access(record)
+        if item["ip"] and item["protocol"] in ACCESS_PROTOCOLS:
+            known.add((str(item["ip"]).lower(), item["protocol"]))
+    result = []
+    for target in targets or []:
+        protocol = observed_access_protocol(target)
+        ip = str(target.get("ip", "")).lower() if isinstance(target, dict) else ""
+        if (ip, protocol) in known:
+            continue
+        result.append(target)
+    return result
 
 
 def normalize_access(record):
@@ -47,13 +76,21 @@ def from_netexec_hosts(hosts, principal):
 
 
 def merge_access(records):
-    """Deduplicate by host/protocol/port while retaining source evidence."""
+    """Deduplicate by stable endpoint identity/protocol while retaining evidence."""
     merged = {}
     for record in records or []:
         item = normalize_access(record)
-        key = (str(item["host"]).lower(), item["protocol"], item["port"])
+        # Collector and service inventory names may differ (short name vs
+        # FQDN).  Prefer the address when available so one auth observation
+        # cannot become two report entries.
+        identity = str(item["ip"]).lower() if item["ip"] else str(item["host"]).lower()
+        key = (identity, item["protocol"], item["port"])
         old = merged.get(key)
-        if old is None or (old["authentication"] != "AUTHENTICATED" and item["authentication"] == "AUTHENTICATED"):
+        replace = old is None or (old["authentication"] != "AUTHENTICATED" and item["authentication"] == "AUTHENTICATED")
+        if old is not None and old["authentication"] == item["authentication"]:
+            replace = replace or (old["privilege"] != "ADMIN" and item["privilege"] == "ADMIN")
+            replace = replace or ("." not in str(old["host"]) and "." in str(item["host"]))
+        if replace:
             merged[key] = item
         elif old is not None and item.get("evidence"):
             old.setdefault("evidence", {}).update(item["evidence"] if isinstance(item["evidence"], dict) else {})

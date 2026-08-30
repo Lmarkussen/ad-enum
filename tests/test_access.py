@@ -1,4 +1,5 @@
-from ad_enum.access import from_netexec_hosts, merge_access, normalize_access, parse_netexec_auth
+from ad_enum.access import (from_netexec_hosts, merge_access, normalize_access,
+                            parse_netexec_auth, filter_redundant_access_targets)
 from ad_enum.adapters.netexec import NetExecAdapter
 from types import SimpleNamespace
 
@@ -20,6 +21,32 @@ def test_access_deduplicates_and_prefers_success():
     ])
     assert len(result) == 1
     assert result[0]["authentication"] == "AUTHENTICATED"
+
+
+def test_access_deduplicates_short_and_fqdn_names_by_ip():
+    result = merge_access([
+        {"host": "DC", "ip": "10.0.0.1", "protocol": "SMB", "port": 445,
+         "authentication": "authenticated", "privilege": "unknown"},
+        {"host": "DC.example", "ip": "10.0.0.1", "protocol": "SMB", "port": 445,
+         "authentication": "authenticated", "privilege": "admin"},
+    ])
+    assert len(result) == 1
+    assert result[0]["host"] == "DC.example"
+    assert result[0]["privilege"] == "ADMIN"
+
+
+def test_access_skips_auth_targets_already_proven_by_collectors():
+    targets = [
+        {"ip": "10.0.0.1", "service": "SMB", "state": "OPEN"},
+        {"ip": "10.0.0.1", "service": "LDAP", "state": "OPEN"},
+        {"ip": "10.0.0.1", "service": "WinRM", "state": "OPEN"},
+    ]
+    existing = [
+        {"ip": "10.0.0.1", "protocol": "SMB", "authentication": "AUTHENTICATED"},
+        {"ip": "10.0.0.1", "protocol": "LDAP", "authentication": "AUTHENTICATED"},
+    ]
+    remaining = filter_redundant_access_targets(targets, existing)
+    assert [item["service"] for item in remaining] == ["WinRM"]
 
 
 def test_access_rejects_unknown_privilege_labels():

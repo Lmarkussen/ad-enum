@@ -33,7 +33,7 @@ from .reporting.html import write_html_report
 from .recon import (normalize_mssql, normalize_dfs, normalize_services,
                     normalize_trust_context, build_privilege_paths)
 from .service_probe import DEFAULT_SERVICES, probe_known_services
-from .access import from_netexec_hosts, merge_access
+from .access import from_netexec_hosts, merge_access, filter_redundant_access_targets
 from .adapters.netexec import NetExecAdapter
 from .cinderpath_adapter import run_cinderpath_cred1, cinderpath_path
 from .cred1_runtime import check_cred1_runtime, fix_cinderpath_capabilities
@@ -768,7 +768,8 @@ def main():
         # Service observations bound the authentication checks to known,
         # relevant endpoints.  The adapter performs at most one attempt for
         # each identity/host/protocol tuple and never receives artifact creds.
-        access_records.extend(nxc.run_access_checks(context=context, targets=service_inventory))
+        access_targets = filter_redundant_access_targets(service_inventory, access_records)
+        access_records.extend(nxc.run_access_checks(context=context, targets=access_targets))
     access_records = merge_access(access_records)
     if any(item.get("authentication") == "AUTHENTICATED" and item.get("protocol") == "SMB"
            for item in access_records):
