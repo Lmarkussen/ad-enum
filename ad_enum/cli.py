@@ -136,6 +136,8 @@ def main():
     networkhound_result = external_results.get("networkhound", {}).get("result", {})
     dns_map = build_dns_map(inventory, networkhound_result.get("inventory") if isinstance(networkhound_result, dict) else None)
     workspace.write_json(workspace.root / "dns-map.json", dns_map)
+    workspace.write_json(workspace.findings_path("LDAP", "networking.json"),
+                         {"sites": collector.raw.get("sites", []), "subnets": collector.raw.get("subnets", [])})
     workspace.write_json(workspace.findings_path("NetworkHound", "inventory.json"),
                          networkhound_result.get("inventory", {}) if isinstance(networkhound_result, dict) else {})
     workspace.write_json(workspace.findings_path("NetworkHound", "dns-map.json"), dns_map)

@@ -129,6 +129,15 @@ class Collector:
             raw_gpos = [dict(e.entry_attributes_as_dict, distinguishedName=e.entry_dn) for e in conn.entries]
         except Exception:
             raw_gpos = []
+        raw_sites, raw_subnets = [], []
+        try:
+            sites_dn = f"CN=Sites,{config}"
+            conn.search(sites_dn, "(objectClass=site)", attributes=["cn", "description"])
+            raw_sites = [dict(e.entry_attributes_as_dict, distinguishedName=e.entry_dn) for e in conn.entries]
+            conn.search(sites_dn, "(objectClass=subnet)", attributes=["cn", "siteObject", "description"])
+            raw_subnets = [dict(e.entry_attributes_as_dict, distinguishedName=e.entry_dn) for e in conn.entries]
+        except Exception:
+            pass
         conn.search(f"CN=Certificate Templates,{base}", "(objectClass=pKICertificateTemplate)", search_scope="LEVEL",
                     attributes=["cn", "displayName", "objectGUID", "objectSid", "msPKI-Certificate-Name-Flag", "msPKI-Enrollment-Flag",
                                 "pKIExtendedKeyUsage", "msPKI-Certificate-Application-Policy", "msPKI-RA-Signature", "nTSecurityDescriptor"],
@@ -145,5 +154,6 @@ class Collector:
         self.raw = {"defaultNamingContext": root, "configurationNamingContext": config,
                     "passwordPolicy": {k: domain_policy[k][0] for k in policy_attrs if k in domain_policy and domain_policy[k]},
                     "cas": raw_cas, "templates": raw_templates, "identities": raw_identities,
-                    "sccm": list(deduped_sccm.values()), "gpos": raw_gpos}
+                    "sccm": list(deduped_sccm.values()), "gpos": raw_gpos,
+                    "sites": raw_sites, "subnets": raw_subnets}
         return normalize_directory(self.raw)
