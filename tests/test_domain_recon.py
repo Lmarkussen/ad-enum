@@ -1,7 +1,7 @@
 from ad_enum.dns_enum import decode_dns_record, merge_into_dns_map, normalize_password_settings, normalize_records, normalize_zones
 import struct
 from ad_enum.gpo import inspect_file, parse_security_settings
-from ad_enum.inventory import parse_netexec_shares
+from ad_enum.inventory import is_standard_admin_share, parse_netexec_shares
 
 
 def test_netexec_share_table_is_normalized():
@@ -18,6 +18,12 @@ def test_netexec_prefixed_share_table_is_normalized():
         "SMB 10.0.0.41 445 MECM IPC$ READ Remote IPC\n")
     assert [(x["share"], x["readable"], x["writable"]) for x in rows] == [
         ("share_iso", True, True), ("IPC$", True, False)]
+
+
+def test_standard_admin_shares_are_not_low_privilege_findings():
+    assert is_standard_admin_share("ADMIN$")
+    assert is_standard_admin_share("C$")
+    assert not is_standard_admin_share("share_iso")
 
 
 def test_ad_dns_records_merge_into_existing_map_without_overwrite():

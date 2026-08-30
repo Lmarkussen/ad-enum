@@ -121,6 +121,11 @@ def parse_netexec_shares(text):
                          "source": "netexec", "raw": line})
     return rows
 
+
+def is_standard_admin_share(name):
+    """Return whether a share name is a standard administrative share."""
+    return str(name or "").upper() in {"ADMIN$", "C$", "D$", "E$", "F$"}
+
 def sensitive_description(text):
     if isinstance(text, list): text = " ".join(str(x) for x in text)
     if not text: return False

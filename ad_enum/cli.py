@@ -16,7 +16,7 @@ from .core.planner import ExecutionPlanner
 from .core.findings import NormalizedFinding
 from .external import execute_external
 from .inventory import (native_inventory, DomainInventory, build_targets, sensitive_description,
-                        parse_netexec_smb, extract_attribute_secret)
+                        parse_netexec_smb, extract_attribute_secret, is_standard_admin_share)
 from .sccm import (discover as discover_sccm, normalize_relayking,
                    probe_management_points, cred1_candidates)
 from .network import build_dns_map
@@ -642,7 +642,7 @@ def main():
             workspace_artifacts=["SMB/inventory.json"], first_seen_scan=workspace.scan_id,
             current_scan=workspace.scan_id).as_dict())
     for share in share_inventory:
-        if share.get("writable"):
+        if share.get("writable") and not is_standard_admin_share(share.get("share")):
             smb_findings.append(NormalizedFinding(
                 finding_id=f"smb:writable-share:{share.get('ip')}:{share.get('share')}", category="SMB",
                 rule="writable-share", title=f"Low-privilege writable share — {share.get('host') or share.get('ip')}\\{share.get('share')}",
