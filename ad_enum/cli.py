@@ -19,7 +19,7 @@ from .network import build_dns_map
 from .gpo import normalize_gpos, collect_sysvol, collect_netlogon, inspect_file
 from .posture import (normalize_smb, normalize_trusts, normalize_gpo_acls, normalize_laps,
                       attach_gpo_links, normalize_security_descriptors, analyze_effective_acls)
-from .kerberos import roastable
+from .kerberos import roastable, account_exposure, privileged_account_sids
 from .delegation import enumerate_delegation, enumerate_gmsa
 from .core.console import Console
 
@@ -189,6 +189,19 @@ def main():
     workspace.write_json(workspace.findings_path("Kerberos", "gmsa.json"), gmsa_records)
     coverage.add("Kerberos / account exposure", "PASS", "native LDAP account flags and SPNs")
     coverage.add("Delegation / LDAP configuration", "PASS", "UAC, constrained delegation, and RBCD observations")
+    domain_security = {"machine_account_quota": collector.raw.get("machineAccountQuota", "unknown"),
+                       "account_flag_observations": []}
+    privileged_sids = privileged_account_sids(inventory)
+    for record in inventory.records.get("users", {}).values():
+        item = account_exposure(record)
+        if item.enabled and (item.flags.get("ENCRYPTED_TEXT_PWD_ALLOWED") or item.flags.get("USE_DES_KEY_ONLY")):
+            domain_security["account_flag_observations"].append({"account": item.username, "sid": item.identifier,
+                "encrypted_text_password_allowed": item.flags.get("ENCRYPTED_TEXT_PWD_ALLOWED", False),
+                "des_only": item.flags.get("USE_DES_KEY_ONLY", False),
+                "privileged": item.identifier in privileged_sids, "sources": item.sources})
+    workspace.write_json(workspace.findings_path("DomainSecurity", "inventory.json"), domain_security)
+    workspace.write_json(workspace.findings_path("DomainSecurity", "findings.json"), [])
+    workspace.write_text(workspace.module_dir("DomainSecurity") / "findings.txt", "")
     labels = {"bloodhound": "BloodHound", "adcs-certipy": "Certipy",
               "ldapdomaindump": "LDAPDomainDump", "netexec": "NetExec"}
     for module_id, result in external_results.items():

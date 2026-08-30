@@ -82,12 +82,14 @@ class Collector:
         conn.search("", "(objectClass=*)", search_scope="BASE",
                     attributes=["defaultNamingContext", "configurationNamingContext", "minPwdLength",
                                 "pwdHistoryLength", "maxPwdAge", "minPwdAge", "lockoutThreshold",
+                                "ms-DS-MachineAccountQuota",
                                 "lockoutDuration", "lockoutObservationWindow", "pwdProperties"])
         root_entry = conn.entries[0].entry_attributes_as_dict
         root = root_entry["defaultNamingContext"][0]
         config = root_entry["configurationNamingContext"][0]
         policy_attrs = ["minPwdLength", "pwdHistoryLength", "maxPwdAge", "minPwdAge",
-                        "lockoutThreshold", "lockoutDuration", "lockoutObservationWindow", "pwdProperties"]
+                        "lockoutThreshold", "lockoutDuration", "lockoutObservationWindow", "pwdProperties",
+                        "ms-DS-MachineAccountQuota"]
         conn.search(root, "(objectClass=domainDNS)", search_scope="BASE", attributes=policy_attrs)
         domain_policy = conn.entries[0].entry_attributes_as_dict if conn.entries else {}
         base = f"CN=Public Key Services,CN=Services,{config}"
@@ -268,6 +270,7 @@ class Collector:
             deduped_sccm[dn.lower()] = item
         self.raw = {"defaultNamingContext": root, "configurationNamingContext": config,
                     "passwordPolicy": {k: domain_policy[k][0] for k in policy_attrs if k in domain_policy and domain_policy[k]},
+                    "machineAccountQuota": (domain_policy.get("ms-DS-MachineAccountQuota") or ["unknown"])[0],
                     "cas": raw_cas, "templates": raw_templates, "identities": raw_identities,
                     "sccm": list(deduped_sccm.values()), "gpos": raw_gpos,
                     "gpo_links": raw_gpo_links, "security_descriptors": raw_security_descriptors,
