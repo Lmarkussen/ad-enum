@@ -513,7 +513,12 @@ def main():
             status="single-source", priority="high", workspace_artifacts=["GPO/findings.json"],
             first_seen_scan=workspace.scan_id, current_scan=workspace.scan_id)
         item["normalized"] = gpo_finding.as_dict()
-    all_findings = (finding_records + policy_findings + description_findings + kerberos_findings +
+    # Keep inactive SPN accounts in Kerberos inventory/evidence, but do not
+    # present them as active exposure findings in the operator overview.
+    active_kerberos_findings = [x for x in kerberos_findings
+                                if not (x.get("rule") == "Kerberoastable-account"
+                                        and x.get("evidence", {}).get("enabled") is False)]
+    all_findings = (finding_records + policy_findings + description_findings + active_kerberos_findings +
                     delegation_findings + relay_findings + smb_findings + acl_findings +
                     [x["normalized"] for x in gpo_findings])
     workspace.write_json(workspace.findings_path("vulnerabilities", "findings.json"), all_findings)
