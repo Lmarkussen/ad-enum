@@ -15,6 +15,7 @@ from .inventory import native_inventory, DomainInventory, build_targets, sensiti
 from .sccm import discover as discover_sccm
 from .kerberos import roastable
 from .delegation import enumerate_delegation, enumerate_gmsa
+from .core.console import Console
 
 
 def main():
@@ -41,6 +42,7 @@ def main():
     p.add_argument("--certipy-json", help="optional Certipy -json result for corroboration")
     p.add_argument("--output-dir", default="./tool")
     a = p.parse_args(argv)
+    console = Console(no_color=a.no_color, verbose=a.verbose, debug=a.verbose)
     if a.password is None:
         import getpass; a.password = getpass.getpass("LDAP password: ")
     target = a.dc or a.domain
@@ -49,14 +51,15 @@ def main():
         bind_domain = ""
     except ValueError:
         bind_domain = a.domain
-    green, red, reset = ("", "", "") if a.no_color else ("\033[32m", "\033[31m", "\033[0m")
+    console.line("AD-Enum")
+    console.line(); console.line("Checking credentials...")
     collector = Collector(target, a.username, a.password, bind_domain, a.ldaps, a.port,
                           timeout=a.timeout, force_kerb=a.force_kerb)
     try:
         root, _ = collector.preflight()
     except Exception as exc:
-        print(f"{red}Credentials Invalid{reset}")
-        if a.verbose: print(f"[DEBUG] preflight failed: {type(exc).__name__}: {exc}")
+        console.status("Credentials Invalid", "INVALID")
+        if a.verbose: console.debug_line(f"preflight failed: {type(exc).__name__}: {exc}")
         return 2
     if not ipaddress.ip_address(a.domain) if False else False:
         pass
@@ -66,11 +69,10 @@ def main():
     except ValueError:
         supplied_is_ip = False
     if not supplied_is_ip and canonical_domain(a.domain) != canonical_domain(root):
-        print(f"Domain mismatch: supplied {a.domain}, discovered {root}")
+        console.status(f"Domain mismatch: supplied {a.domain}, discovered {root}", "FAILED")
         return 2
-    print(f"{green}Credentials are Valid{reset}")
+    console.status("Credentials are Valid", "VALID")
     workspace = ScanWorkspace(a.output_dir, root, original_target=target)
-    print(f"Domain: {root}")
     requested = []
     for module in (x.strip().lower() for x in a.modules.split(",") if x.strip()):
         if module == "all": requested.extend(("bloodhound", "adcs-certipy", "ldapdomaindump", "netexec", "ldap", "adcs-native", "kerberos", "delegation", "sccm-discovery"))
@@ -78,8 +80,8 @@ def main():
         else: requested.append(module)
     plan = ExecutionPlanner().plan(requested or ["adcs-native"])
     if a.verbose:
-        print("Execution plan")
-        for item in plan: print(f"  {item.spec.name} ........ {item.status.value}{(' - ' + item.reason) if item.reason else ''}")
+        console.heading("Execution plan")
+        for item in plan: console.line(f"  {item.spec.name} ........ {item.status.value}{(' - ' + item.reason) if item.reason else ''}")
     imported_certipy = CertipyAdapter().from_json(a.certipy_json) if a.certipy_json else None
     context = ScanContext(workspace.domain, target, AuthContext(a.username, a.password, bind_domain),
                           workspace, timeout=a.timeout, scan_id=workspace.scan_id,
@@ -88,7 +90,7 @@ def main():
     if a.auto_config:
         context.auto_config = inspect_autoconfig(a.dc or target, workspace.domain)
         context.dc_hostname = context.auto_config.get("dc_hostname", "")
-        if a.verbose: print(f"Auto-config: {context.auto_config}")
+        if a.verbose: console.debug_line(f"auto-config: {context.auto_config}")
     # Native LDAP is the discovery prerequisite for the multi-host plan.
     root, cas, templates = collector.collect()
     inventory = native_inventory(collector.raw)
@@ -97,7 +99,6 @@ def main():
     external_results, external_diagnostics = execute_external(context, plan, certipy_snapshot=imported_certipy)
     certipy_result = external_results.get("adcs-certipy", {}).get("snapshot") if external_results.get("adcs-certipy", {}).get("status") == "PASS" else None
     certipy = certipy_result or imported_certipy
-    print(f"CAs: {len(cas)}\nTemplates: {len(templates)}")
     source_counts = {"native-ldap": native_counts}
     for result in external_results.values():
         obj = result.get("result", {}) if isinstance(result, dict) else {}
@@ -122,23 +123,22 @@ def main():
         coverage_status = {"PASS": "PASS", "FAILED": "FAILED", "UNAVAILABLE": "NOT AVAILABLE"}.get(status, "NOT CHECKED")
         coverage.add(f"External / {labels.get(module_id, module_id)}", coverage_status,
                      result.get("reason", "collector completed"))
-        if a.verbose or status == "PASS":
+        if a.verbose:
             result_obj = result.get("result", {})
             inv = result_obj.get("inventory") if isinstance(result_obj, dict) else None
             if hasattr(inv, "counts"):
                 counts = inv.counts()
                 source_counts[result_obj.get("source", module_id)] = counts
-                print(f"[*] {labels.get(module_id, module_id)}: " + ", ".join(f"{k}={v}" for k, v in counts.items()))
+                console.line(f"  {labels.get(module_id, module_id)}: " + ", ".join(f"{k}={v}" for k, v in counts.items()))
             elif status == "PASS":
-                print(f"[*] {labels.get(module_id, module_id)}: collected")
-    print("[*] Native LDAP: " + ", ".join(f"{k}={v}" for k, v in native_counts.items()))
+                console.line(f"  {labels.get(module_id, module_id)}: collected")
     ldd_result = external_results.get("ldapdomaindump", {}).get("result", {})
     ldd_inv = ldd_result.get("inventory") if isinstance(ldd_result, dict) else None
     if hasattr(ldd_inv, "records"):
         native_users = inventory.records.get("users", {})
         ldd_users = ldd_inv.records.get("users", {})
         descriptions = sum(bool(r.attributes.get("description")) for r in ldd_users.values())
-        print(f"[*] LDAPDomainDump users with descriptions: {descriptions}")
+        if a.verbose: console.line(f"  LDAPDomainDump users with descriptions: {descriptions}")
     for module_id, result in external_results.items():
         result_obj = result.get("result", {}) if isinstance(result, dict) else {}
         if result_obj.get("password_policy"):
@@ -293,12 +293,10 @@ def main():
             published.add(t.name)
             vulnerable, reasons = native.vulnerable, native.detail.split("; ") if native.detail else []
             if a.verbose:
-                print(f"[DEBUG] template={t.name} flags=0x{t.name_flags:x}/0x{t.enrollment_flags:x} ekus={t.ekus} application_policies={t.application_policies}")
-                for ace in t.security_descriptor or []: print(f"[DEBUG] ACE type={ace.ace_type} kind={ace.kind} sid={ace.sid} mask=0x{ace.mask:x} object_type={ace.object_type} inherited={ace.inherited}")
-            if vulnerable:
-                print(f"[ESC1] {t.display_name or t.name}\n  CA: {ca.name}\n  Enrollee supplies subject/SAN: yes\n  Reason: {reasons[-1]}")
+                console.debug_line(f"template={t.name} flags=0x{t.name_flags:x}/0x{t.enrollment_flags:x} ekus={t.ekus} application_policies={t.application_policies}")
+                for ace in t.security_descriptor or []: console.debug_line(f"ACE type={ace.ace_type} kind={ace.kind} sid={ace.sid} mask=0x{ace.mask:x} object_type={ace.object_type} inherited={ace.inherited}")
             elif a.verbose:
-                print(f"[DEBUG] template={t.name} CA={ca.name} result=NOT ESC1 rejected because: {'; '.join(reasons)}")
+                console.debug_line(f"template={t.name} CA={ca.name} result=NOT ESC1 rejected because: {'; '.join(reasons)}")
     if a.verbose:
         for t in templates:
             if t.name not in published:
@@ -306,17 +304,17 @@ def main():
                 from .models import PrincipalContext, CA
                 principals = PrincipalContext(set().union(*(x.evidence.get("low_privileged_subject_sids", set()) for x in templates)))
                 _, reasons = classify_esc1(t, CA("", ""), principals, False)
-                print(f"[DEBUG] template={t.name} result=NOT ESC1 rejected because: {'; '.join(reasons)}")
-        for ca, ref in dangling: print(f"[DEBUG] dangling publication: CA={ca} template={ref}")
-        for key, values in duplicates.items(): print(f"[DEBUG] duplicate template key={key} count={len(values)}")
-        print(coverage.render("Coverage"))
-    if certipy:
+                console.debug_line(f"template={t.name} result=NOT ESC1 rejected because: {'; '.join(reasons)}")
+        for ca, ref in dangling: console.debug_line(f"dangling publication: CA={ca} template={ref}")
+        for key, values in duplicates.items(): console.debug_line(f"duplicate template key={key} count={len(values)}")
+        console.line(coverage.render("Coverage"))
+    if certipy and a.verbose:
         for name, comparison in comparisons.items():
             if len(comparison.assessments) > 1:
-                print(f"[CORROBORATION] {name}: {comparison.status}")
+                console.line(f"[CORROBORATION] {name}: {comparison.status}")
                 if comparison.status == "disagreement":
                     for assessment in comparison.assessments:
-                        print(f"  {assessment.source}: {assessment.vulnerable} ({assessment.detail})")
+                        console.line(f"  {assessment.source}: {assessment.vulnerable} ({assessment.detail})")
     statuses = [c for c in comparisons.values() if c.status == "corroborated"]
     disagreements = [c for c in comparisons.values() if c.status == "disagreement"]
     summary = (f"Domain: {root}\nTarget: {target}\n\nADCS\n  CAs: {len(cas)}\n"
@@ -354,5 +352,44 @@ def main():
             if source_dir.exists():
                 shutil.copytree(source_dir, workspace.history_module_dir(item.spec.outputs[0]),
                                 dirs_exist_ok=True)
-    print(f"Workspace: {workspace.root}")
+    console.line()
+    console.heading("Target")
+    console.line(f"  Domain ............. {root}")
+    console.line(f"  DC ................. {target}")
+    console.line()
+    console.heading("Collectors")
+    console.status("  Native LDAP ........ PASS", "PASS")
+    for module_id, label in (("bloodhound", "BloodHound"), ("adcs-certipy", "Certipy"),
+                             ("ldapdomaindump", "LDAPDomainDump"), ("netexec", "NetExec")):
+        result = external_results.get(module_id, {})
+        state = result.get("status", "NOT CHECKED")
+        display = {"PASS": "PASS", "FAILED": "FAILED", "UNAVAILABLE": "NOT AVAILABLE"}.get(state, state)
+        console.status(f"  {label:<19} {display}", display)
+    console.line()
+    console.heading("Inventory")
+    for key, label in (("users", "Users"), ("groups", "Groups"), ("computers", "Computers"),
+                       ("domain_controllers", "Domain Controllers"), ("domains", "Domains"),
+                       ("gmsa", "gMSAs")):
+        console.line(f"  {label:<19} {inventory.counts().get(key, 0)}")
+    console.line(f"  {'CAs':<19} {len(cas)}")
+    console.line(f"  {'Templates':<19} {len(templates)}")
+    console.line()
+    console.heading("Findings")
+    if not all_findings:
+        console.line("  None")
+    else:
+        for item in all_findings:
+            console.line()
+            console.status(f"  [{item['category']}] {item['title']}", item.get("status"))
+            if item["rule"] == "ESC1":
+                console.line(f"    Status ........... {item.get('status', '').upper()}")
+            elif item["rule"] == "Kerberoastable-account":
+                spns = item.get("evidence", {}).get("spns", [])
+                console.line(f"    SPNs ............. {len(spns)}")
+                console.line(f"    Status ........... {item.get('status', '').upper()}")
+            elif item.get("status") not in {"single-source", "corroborated"}:
+                console.line(f"    Status ........... {item.get('status', '').upper()}")
+    console.line()
+    console.heading("Workspace")
+    console.line(console.paint(f"  tool/{workspace.domain}/", "dim"))
     return 0
