@@ -191,3 +191,35 @@ one `KerberosSession` whose restricted temporary ccache/config are inherited
 by compatible subprocess adapters and cleaned on process exit or explicit
 scan completion.  Certipy 5.1.0 requires `-k -no-pass -target` and remains
 blocked by the lab's six-hour clock skew; NetExec now reuses the shared cache.
+# LIVE KERBEROS/DELEGATION VALIDATION (2026-08-30)
+
+The disposable SCCM.LAB now contains a deliberately isolated `OU=ADEnum-Lab`.
+Its current sanitized account fixtures are captured in
+`tests/fixtures/live_sccm_lab_kerberos_accounts.json`:
+
+* `adenum-asrep-test`: enabled with `DONT_REQ_PREAUTH` (`userAccountControl=4260352`).
+* `adenum-pwdnr`: enabled with `PASSWD_NOTREQD` (`userAccountControl=66080`).
+* `adenum-krbtest`: enabled with the lab SPN `adenum-test/svc.sccm.lab:4242`.
+
+Observed live positive scan results as the ordinary scan identity were AS-REP,
+PASSWD_NOTREQD, and the dedicated SPN exposure. Clearing each individual bit
+or removing the SPN removed its corresponding finding; each state was restored.
+The existing `sccm-sql` SPNs remain unchanged.
+
+The proper LDAP/WinRM administration path also created `adenum-unconst` and
+`adenum-const` in the same OU. The first has `TRUSTED_FOR_DELEGATION`; the
+second has `msDS-AllowedToDelegateTo=HOST/dc.sccm.lab` and
+`TRUSTED_TO_AUTH_FOR_DELEGATION`. A native scan reports the non-DC
+unconstrained and constrained conditions; the expected DC state is suppressed.
+
+No RBCD or gMSA fixture was created in this pass. No hashes, tickets, ccache,
+passwords, managed passwords, certificates, or private keys were retained.
+The setup/cleanup scripts under `lab/kerberos/` are LAB ONLY and are never
+called by the scanner.
+
+Kerberos time validation: before synchronization, `ntpdate -q` reported
+`+21599.586765s` against `10.1.10.40`; after the explicitly authorized
+one-shot synchronization it reported approximately `-0.000078s`. The
+full `--auto-config --sync-time --force-kerb` run passed Native LDAP,
+BloodHound, Certipy, and NetExec. LDAPDomainDump remains unsupported/failed
+under forced Kerberos and does not fall back to NTLM.
