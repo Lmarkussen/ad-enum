@@ -30,7 +30,7 @@ from .anonymous import probe_anonymous_ldap, probe_anonymous_smb
 from .reporting.html import write_html_report
 from .recon import (normalize_mssql, normalize_dfs, normalize_services,
                     normalize_trust_context, build_privilege_paths)
-from .service_probe import probe_known_services
+from .service_probe import DEFAULT_SERVICES, probe_known_services
 
 
 CATEGORY_ORDER = ("ADCS", "POLICY", "KERBEROS", "ACCOUNT", "DELEGATION",
@@ -130,8 +130,21 @@ def _affected_object_values(item, limit=None):
     return result
 
 
+def _service_summary_lines(services, limit=None):
+    """Render only observed/open services, preserving protocol state."""
+    open_services = [x for x in (services or []) if x.get("reachable") or x.get("state") == "OPEN"]
+    open_services.sort(key=lambda x: (str(x.get("host", "")).lower(), x.get("port") or 0))
+    if limit is not None:
+        open_services = open_services[:limit]
+    lines = []
+    for item in open_services:
+        label = f"{item.get('service', 'Service')}/{item.get('port', '')}"
+        lines.append(f"  {item.get('host') or item.get('ip', 'unknown')}  {label} ........ {item.get('protocol_state', 'TCP OPEN')}")
+    return lines
+
+
 def _results_text(root, target, external_results, inventory, cas, templates, all_findings,
-                  workspace, *, corroborated=0, disagreements=0, smb_shares=None):
+                  workspace, *, corroborated=0, disagreements=0, smb_shares=None, services=None):
     lines = ["AD-Enum", "", "Target",
              Console.field("Domain", root), Console.field("DC", target), "",
              "Collectors", Console.field("Native LDAP", "PASS")]
@@ -163,6 +176,9 @@ def _results_text(root, target, external_results, inventory, cas, templates, all
                 access = "UNKNOWN"
             lines.append(f"  {share.get('host') or share.get('ip', 'unknown')}\\{share.get('share', 'unknown')} ........ {access}")
             lines.append(f"    Path ............. {share.get('unc', 'unknown')}")
+    service_lines = _service_summary_lines(services)
+    if service_lines:
+        lines.extend(["", "Service Exposure", *service_lines])
     lines.extend(["", "Findings"])
     finding_lines = _finding_lines(all_findings)
     lines.extend(finding_lines or ["  None"])
@@ -633,7 +649,10 @@ def main():
     service_inventory = normalize_services([x.attributes for x in inventory.records.get("observed_hosts", {}).values()])
     service_targets = list(context.targets)
     service_targets.extend({"host": x.get("host"), "ip": x.get("ip")} for x in smb_inventory)
-    service_probes = probe_known_services(service_targets, timeout=min(a.timeout, 2), max_hosts=64)
+    service_ports = dict(DEFAULT_SERVICES)
+    service_ports.update({int(x["port"]): "MSSQL" for x in mssql_inventory if x.get("port")})
+    service_probes = probe_known_services(service_targets, ports=service_ports,
+                                          timeout=min(a.timeout, 2), max_hosts=64)
     service_inventory.extend(service_probes)
     service_inventory = sorted({(x.get("host"), x.get("service"), x.get("port")): x
                                 for x in service_inventory}.values(),
@@ -1043,7 +1062,7 @@ def main():
     workspace.write_text(workspace.root / "summary.txt", summary)
     report_text = _results_text(root, target, external_results, inventory, cas, templates, all_findings,
                                 workspace, corroborated=len(statuses), disagreements=len(disagreements),
-                                smb_shares=share_inventory)
+                                smb_shares=share_inventory, services=service_inventory)
     workspace.write_text_atomic(workspace.root / "results.txt", report_text)
     # Keep a non-destructive historical copy for this scan ID.
     workspace.write_json(workspace.history_root / "scan.json", {"domain": root, "target": target,
@@ -1070,6 +1089,7 @@ def main():
                               "CAs": len(cas), "Templates": len(templates)},
                 "credentials": discovered_credentials,
                 "smb_shares": share_inventory,
+                "services": service_inventory,
                 "sccm": {key: sccm_result.get(key, []) for key in
                           ("site_code", "management_points", "distribution_points", "site_servers",
                            "sms_providers", "sql_servers", "sup_wsus", "pxe", "status")},
@@ -1131,6 +1151,12 @@ def main():
                 access = "UNKNOWN"
             console.line(f"  {share.get('host') or share.get('ip', 'unknown')}\\{share.get('share', 'unknown')} ........ {access}")
             console.line(f"    Path ............. {share.get('unc', 'unknown')}")
+    service_lines = _service_summary_lines(service_inventory, limit=20)
+    if service_lines:
+        console.line()
+        console.heading("Service Exposure")
+        for line in service_lines:
+            console.line(line)
     console.line()
     console.heading("Findings")
     if not all_findings:

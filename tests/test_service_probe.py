@@ -40,6 +40,42 @@ def test_known_service_probe_deduplicates_ip_port():
     assert len(calls) == 1
 
 
+def test_known_service_probe_wires_http_protocol_probe():
+    class Socket:
+        def sendall(self, data):
+            self.sent = data
+        def recv(self, size):
+            return b"HTTP/1.1 401 Unauthorized\r\nServer: Microsoft-HTTPAPI/2.0\r\nWWW-Authenticate: Negotiate\r\n\r\n"
+        def close(self):
+            pass
+
+    result = probe_known_services([{"fqdn": "MECM.sccm.lab", "ips": ["10.0.0.8"]}],
+                                  ports={5985: "WinRM HTTP"}, connector=lambda *args, **kwargs: Socket())
+    assert result[0]["protocol_state"] == "PROTOCOL CONFIRMED"
+    assert result[0]["wsman"] is True
+    assert result[0]["www_authenticate"] == ["Negotiate"]
+
+
+def test_known_service_probe_wires_tds_prelogin_probe():
+    response = bytearray(b"\x04\x01\x00\x1a\x00\x00\x01\x00")
+    response.extend(bytes([0x00, 0x00, 0x13, 0x00, 0x06, 0x01, 0x00, 0x19, 0x00, 0x01, 0xff]))
+    response.extend(b"\x0f\x00\x00\x00\x01\x00\x03")
+
+    class Socket:
+        def sendall(self, data):
+            self.sent = data
+        def recv(self, size):
+            return bytes(response)
+        def close(self):
+            pass
+
+    result = probe_known_services([{"fqdn": "sql.sccm.lab", "ips": ["10.0.0.9"]}],
+                                  ports={1433: "MSSQL"}, connector=lambda *args, **kwargs: Socket())
+    assert result[0]["protocol_state"] == "PROTOCOL CONFIRMED"
+    assert result[0]["tds"] == "CONFIRMED"
+    assert result[0]["encryption"] == "REQUIRED"
+
+
 def test_tds_prelogin_parser_confirms_protocol_and_encryption():
     # TDS header + VERSION and ENCRYPTION option table, followed by payloads.
     packet = bytearray(b"\x04\x01\x00\x1a\x00\x00\x01\x00")
