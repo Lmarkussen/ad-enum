@@ -36,7 +36,19 @@ def _effective_capabilities():
         return 0
 
 
-def check_cred1_runtime(target):
+def _file_capabilities(executable):
+    getcap = shutil.which("getcap")
+    if not getcap or not executable:
+        return ""
+    try:
+        result = subprocess.run([getcap, executable], capture_output=True, text=True,
+                                timeout=2, check=False)
+        return result.stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+def check_cred1_runtime(target, executable=None):
     """Return explicit PXE suitability diagnostics without changing privileges."""
     result = {"status": "READY", "target": str(target), "platform": platform.system(),
               "interface": "", "requirements": [], "reasons": []}
@@ -56,12 +68,34 @@ def check_cred1_runtime(target):
         result["status"] = "NOT TESTED"
         result["reasons"].append("routed/tunnel interface cannot provide required Ethernet broadcast capture")
     caps = _effective_capabilities()
-    if not (caps & (1 << 13)):
+    file_caps = _file_capabilities(executable)
+    capture_ready = ((caps & (1 << 12)) and (caps & (1 << 13))) or (
+        "cap_net_raw" in file_caps and "cap_net_admin" in file_caps)
+    if not capture_ready:
         result["status"] = "NOT TESTED"
-        result["reasons"].append("CAP_NET_RAW is not effective")
-    if not (caps & (1 << 12)):
-        result["status"] = "NOT TESTED"
-        result["reasons"].append("CAP_NET_ADMIN is not effective")
+        if not (caps & (1 << 13)) and "cap_net_raw" not in file_caps:
+            result["reasons"].append("CAP_NET_RAW is not effective")
+        if not (caps & (1 << 12)) and "cap_net_admin" not in file_caps:
+            result["reasons"].append("CAP_NET_ADMIN is not effective")
     result["requirements"] = ["Linux", "libpcap", "CAP_NET_RAW", "CAP_NET_ADMIN",
                                "direct Ethernet/broadcast visibility"]
+    result["file_capabilities"] = file_caps
+    result["capability_fixable"] = bool(
+        result["platform"] == "Linux" and find_library("pcap") and route and
+        not route.startswith(("tailscale", "tun", "tap", "wg")) and executable and
+        not capture_ready)
     return result
+
+
+def fix_cinderpath_capabilities(executable):
+    """Apply CinderPath's documented capability fix to CinderPath only."""
+    if not executable:
+        return False, "CinderPath executable is unavailable"
+    try:
+        result = subprocess.run(["sudo", "setcap", "cap_net_raw,cap_net_admin+eip", executable],
+                                stdin=None, stdout=None, stderr=None, timeout=30, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+    if result.returncode:
+        return False, f"sudo setcap exited {result.returncode}"
+    return True, "capabilities applied to CinderPath"

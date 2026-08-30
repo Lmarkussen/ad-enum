@@ -35,8 +35,8 @@ from .recon import (normalize_mssql, normalize_dfs, normalize_services,
 from .service_probe import DEFAULT_SERVICES, probe_known_services
 from .access import from_netexec_hosts, merge_access
 from .adapters.netexec import NetExecAdapter
-from .cinderpath_adapter import run_cinderpath_cred1
-from .cred1_runtime import check_cred1_runtime
+from .cinderpath_adapter import run_cinderpath_cred1, cinderpath_path
+from .cred1_runtime import check_cred1_runtime, fix_cinderpath_capabilities
 
 
 CATEGORY_ORDER = ("ADCS", "POLICY", "KERBEROS", "ACCOUNT", "DELEGATION",
@@ -665,8 +665,29 @@ def main():
     if cred1_targets:
         console.activity("Checking SCCM CRED-1 PXE exposure...")
         cred1_results = []
+        cinder_executable = cinderpath_path()
+        setup_decision = None
         for target in cred1_targets[:4]:
-            runtime = check_cred1_runtime(target)
+            runtime = check_cred1_runtime(target, cinder_executable)
+            if runtime.get("capability_fixable") and setup_decision is None:
+                if sys.stdin.isatty() and sys.stdout.isatty():
+                    console.line("SCCM/PXE credential checks require packet-capture capabilities.")
+                    console.line(f"  CinderPath .......... {'INSTALLED' if cinder_executable else 'MISSING'}")
+                    console.line(f"  Interface ........... {runtime.get('interface') or 'UNKNOWN'}")
+                    answer = input("Configure CinderPath packet-capture capability now? [y/N] ")
+                    setup_decision = answer.strip().lower() in {"y", "yes"}
+                    if setup_decision:
+                        ok, reason = fix_cinderpath_capabilities(cinder_executable)
+                        if not ok:
+                            setup_decision = False
+                            runtime["setup_error"] = reason
+                        else:
+                            runtime = check_cred1_runtime(target, cinder_executable)
+                            runtime["setup"] = reason
+                else:
+                    setup_decision = False
+            if setup_decision is False and runtime.get("capability_fixable"):
+                runtime["reasons"].append("setup declined or noninteractive execution")
             if runtime["status"] != "READY":
                 cred1_results.append({"dp": target, "pxe": "NOT TESTED", "wds": "NOT TESTED",
                                       "tftp": "NOT TESTED", "media_protection": "UNKNOWN",
@@ -674,7 +695,8 @@ def main():
                                       "sources": ["CRED-1 execution-host prerequisite check"],
                                       "runtime": runtime})
             else:
-                cred1_results.append(run_cinderpath_cred1(target, timeout=min(a.timeout, 60)))
+                cred1_results.append(run_cinderpath_cred1(target, timeout=min(a.timeout, 60),
+                                                         executable=cinder_executable))
         sccm_result["cred1"] = cred1_results[0] if len(cred1_results) == 1 else cred1_results
         workspace.write_json(workspace.findings_path("SCCM", "cred1.json"), sccm_result["cred1"])
         cred1_status = "PASS" if any(x.get("pxe") == "CONFIRMED" for x in cred1_results) else "PARTIAL"
