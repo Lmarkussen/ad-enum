@@ -280,3 +280,27 @@ low-privilege scan identity and found only each policy's `GPT.INI`. No targeted
 GPP credential files, scripts, or cleartext credential evidence were present.
 Credential evidence is redacted and `cpassword` is not decrypted. No GPO or
 lab configuration was modified.
+
+## NetworkHound and GPO live validation
+
+NetworkHound commit `47ea549` was installed on Kali in its own
+`/home/kali/NetworkHound/.venv` using the repository requirements. AD-Enum ran
+it in topology-only mode with the low-privilege scan identity; no port scan,
+SMB validation, HTTP validation, or shadow-IT mode was enabled. Its structured
+OpenGraph output mapped the four domain computers to `10.1.10.40` through
+`.43` and identified `10.1.10.0/24` as an inferred site because no AD subnet
+object exists. The central `dns-map.json` merged those observations with
+native LDAP DNS results by computer SID.
+
+Native LDAP independently found the AD site
+`Default-First-Site-Name` and no configured subnet objects. NetworkHound is
+classified as optional/supporting: useful for independent topology and DNS
+corroboration, but not required because native collection already provides
+the core map.
+
+The live GPO baseline found two default GPOs and successfully read their
+targeted SYSVOL metadata as the scan user. Only `GPT.INI` files were present;
+there were no GPP preference credential files, scripts, connection strings,
+or credential-like findings. No GPO positive fixture was created because no
+currently usable LAB ADMIN credential/token was available; the scanner was
+not run with elevated credentials and no domain configuration was changed.
