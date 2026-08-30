@@ -46,6 +46,7 @@ class ModuleRegistry:
         r.register(ModuleSpec("ldapdomaindump", "LDAPDomainDump", "directory", required_tools=("ldapdomaindump",), outputs=("LDAPDomainDump",)))
         r.register(ModuleSpec("netexec", "NetExec", "smb", required_tools=("nxc",), outputs=("NetExec",)))
         r.register(ModuleSpec("sccm-discovery", "SCCM discovery", "sccm", outputs=("SCCM",)))
+        r.register(ModuleSpec("relay", "Relay enumeration", "relay", outputs=("Relay",)))
         return r
 
 class ExecutionPlanner:

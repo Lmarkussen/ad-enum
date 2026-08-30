@@ -43,10 +43,8 @@ def main():
     except ValueError:
         bind_domain = a.domain
     green, red, reset = ("", "", "") if a.no_color else ("\033[32m", "\033[31m", "\033[0m")
-    if a.force_kerb:
-        print("Kerberos mode unavailable: native LDAP Kerberos transport is not implemented")
-        return 2
-    collector = Collector(target, a.username, a.password, bind_domain, a.ldaps, a.port, timeout=a.timeout)
+    collector = Collector(target, a.username, a.password, bind_domain, a.ldaps, a.port,
+                          timeout=a.timeout, force_kerb=a.force_kerb)
     try:
         root, _ = collector.preflight()
     except Exception as exc:
@@ -133,6 +131,7 @@ def main():
     sccm_result = discover_sccm(inventory)
     workspace.write_json(workspace.findings_path("SCCM", "inventory.json"), sccm_result)
     coverage.add("SCCM / infrastructure discovery", "PASS", f"{len(sccm_result['hosts'])} candidate host(s)")
+    coverage.add("Relay enumeration", "NOT RUN", "future RelayKing-Depth integration")
     workspace.write_json(workspace.root / "scan.json", {
         "domain": root, "canonical_domain": workspace.domain, "target": target,
         "username": a.username, "scan_id": workspace.scan_id,

@@ -18,6 +18,7 @@ command -v python3 >/dev/null 2>&1 || need_apt+=(python3)
 python3 -c 'import venv' >/dev/null 2>&1 || need_apt+=(python3-venv)
 if [[ "$mode" != minimal ]] && ! command -v pipx >/dev/null 2>&1; then need_apt+=(pipx); fi
 if [[ "$mode" != minimal ]] && ! command -v nxc >/dev/null 2>&1; then need_apt+=(netexec); fi
+if [[ "$mode" != minimal ]] && ! command -v kinit >/dev/null 2>&1; then need_apt+=(krb5-user); fi
 if ((${#need_apt[@]})); then
   if ! command -v sudo >/dev/null 2>&1; then
     echo "Missing system packages: ${need_apt[*]} (sudo unavailable)" >&2; exit 1

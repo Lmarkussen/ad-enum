@@ -7,7 +7,7 @@ name = "AD-Enum"
 version = "0.1.0"
 description = "Protocol-native Active Directory Certificate Services enumeration"
 requires-python = ">=3.11"
-dependencies = ["ldap3>=2.9", "pycryptodome>=3.20", "dnspython>=2.6"]
+dependencies = ["ldap3>=2.9", "pycryptodome>=3.20", "dnspython>=2.6", "gssapi>=1.9"]
 
 [project.scripts]
 ad-enum = "ad_enum.cli:main"
