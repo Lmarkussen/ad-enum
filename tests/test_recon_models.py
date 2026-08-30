@@ -1,5 +1,5 @@
 from ad_enum.inventory import DomainInventory
-from ad_enum.recon import (build_privilege_paths, normalize_dfs, normalize_mssql,
+from ad_enum.recon import (build_privilege_paths, correlate_dfs_targets, normalize_dfs, normalize_mssql,
                             normalize_services, normalize_trust_context)
 
 
@@ -23,11 +23,29 @@ def test_dfs_and_services_are_bounded_and_deduplicated():
                           "targets": ["\\\\FILE01\\Tools$", "\\\\FILE01\\Tools$"],
                           "access": "readable"}])
     assert dfs[0]["targets"] == ["\\\\FILE01\\Tools$"]
+
+
+def test_dfs_normalizes_modern_attributes_and_multiple_targets():
+    rows = normalize_dfs([{"name": "\\\\sccm.lab\\Software", "msDFS-LinkPathv2": "Tools",
+                           "remoteServerName": ["FILE01", "FILE02"],
+                           "remotePathName": ["Tools$"], "distinguishedName": "CN=Tools"}])
+    assert rows[0]["path"] == "Tools"
+    assert rows[0]["targets"] == ["\\\\FILE01\\Tools$", "\\\\FILE02\\Tools$"]
+    assert rows[0]["dn"] == "CN=Tools"
+    correlate_dfs_targets(rows, [{"host": "FILE01", "share": "Tools$", "readable": True, "writable": False}])
+    assert rows[0]["target_access"][0]["access"] == "READ"
+    assert rows[0]["target_access"][1]["access"] == "UNKNOWN"
     services = normalize_services([{"host": "MECM", "ip": "10.1.10.41",
                                     "services": [{"name": "WinRM", "port": 5985, "state": "open"},
                                                   {"name": "WinRM", "port": 5985, "state": "open"}]}])
     assert len(services) == 1
     assert services[0]["state"] == "OPEN"
+
+
+def test_dfs_malformed_target_is_bounded():
+    rows = normalize_dfs([{"name": "\\\\sccm.lab\\Software", "msDFS-LinkPathv2": "Broken",
+                           "msDFS-TargetListv2": ["not-a-unc", "\\\\FILE01\\Deploy"]}])
+    assert rows[0]["targets"] == ["\\\\FILE01\\Deploy", "not-a-unc"]
 
 
 def test_trust_context_and_privilege_paths_preserve_sources_and_depth():

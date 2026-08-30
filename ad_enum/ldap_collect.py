@@ -149,6 +149,27 @@ class Collector:
                                           targetType=target_type) for e in conn.entries)
         except Exception:
             raw_gpo_links = []
+        # DFS namespace/link objects are published in the domain naming
+        # context. Keep this query narrow and expose its status so a valid
+        # empty result is distinguishable from an unavailable source.
+        raw_dfs, dfs_collection = [], {"status": "PASS", "namespace_count": 0, "link_count": 0}
+        try:
+            dfs_attrs = ["objectClass", "name", "distinguishedName", "msDFS-LinkPathv2",
+                         "msDFS-TargetListv2", "remoteServerName", "remotePathName"]
+            conn.search(root, "(|(objectClass=fTDfs)(objectClass=msDFS-Namespacev2)(objectClass=msDFS-Linkv2))",
+                        attributes=dfs_attrs)
+            raw_dfs = [dict(e.entry_attributes_as_dict, distinguishedName=e.entry_dn) for e in conn.entries]
+            for item in raw_dfs:
+                classes = item.get("objectClass") or []
+                classes = classes if isinstance(classes, (list, tuple, set)) else [classes]
+                classes = {str(x).lower() for x in classes}
+                if "msdfs-linkv2" in classes:
+                    dfs_collection["link_count"] += 1
+                else:
+                    dfs_collection["namespace_count"] += 1
+        except Exception as exc:
+            raw_dfs = []
+            dfs_collection = {"status": "FAILED", "error": str(exc), "namespace_count": 0, "link_count": 0}
         raw_sites, raw_subnets = [], []
         raw_dns_zones, raw_dns_records = [], []
         for dns_partition in (f"DC=DomainDnsZones,{root}", f"DC=ForestDnsZones,{root}"):
@@ -296,6 +317,7 @@ class Collector:
                     "cas": raw_cas, "templates": raw_templates, "identities": raw_identities,
                     "sccm": list(deduped_sccm.values()), "gpos": raw_gpos,
                     "gpo_links": raw_gpo_links, "security_descriptors": raw_security_descriptors,
+                    "dfs": raw_dfs, "dfs_collection": dfs_collection,
                     "security_descriptor_errors": descriptor_errors,
                     "sites": raw_sites, "subnets": raw_subnets,
                     "trusts": raw_trusts, "laps_schema": raw_laps_schema,

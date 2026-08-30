@@ -41,14 +41,64 @@ def normalize_dfs(rows):
     for row in rows or []:
         if not isinstance(row, dict):
             continue
-        targets = row.get("targets", row.get("target_uncs", []))
-        if isinstance(targets, str): targets = [targets]
-        result.append({"namespace": row.get("namespace", row.get("root", "")),
-                       "path": row.get("path", row.get("link", "")),
+        def value(*names):
+            for name in names:
+                if name in row:
+                    return row[name]
+                for key, candidate in row.items():
+                    if str(key).lower() == name.lower():
+                        return candidate
+            return ""
+        targets = value("targets", "target_uncs", "msDFS-TargetListv2")
+        if isinstance(targets, str): targets = [targets] if targets else []
+        if isinstance(targets, (bytes, bytearray)):
+            decoded = bytes(targets).decode("utf-16le", "ignore")
+            targets = re.findall(r"\\\\[^\x00]+", decoded)
+        if not targets:
+            server, path = value("remoteServerName"), value("remotePathName")
+            servers = server if isinstance(server, list) else [server]
+            paths = path if isinstance(path, list) else [path]
+            targets = [f"\\\\{s.strip('\\\\')}\\{p.strip('\\\\')}" for s in servers for p in paths if s and p]
+        result.append({"namespace": value("namespace", "root", "name"),
+                       "path": value("path", "link", "msDFS-LinkPathv2"),
                        "targets": sorted({str(x) for x in (targets or []) if x}),
-                       "source": row.get("source", "native-ldap"),
-                       "access": str(row.get("access", "UNKNOWN")).upper()})
+                       "source": value("source") or "native-ldap",
+                       "access": str(value("access") or "UNKNOWN").upper(),
+                       "dn": value("distinguishedName")})
     return result
+
+
+def correlate_dfs_targets(dfs_rows, shares):
+    """Attach only observed SMB access to normalized DFS targets."""
+    by_share = {}
+    for share in shares or []:
+        if not isinstance(share, dict):
+            continue
+        host = str(share.get("host") or share.get("ip") or "").lower()
+        name = str(share.get("share") or "").lower()
+        if host and name:
+            by_share[(host, name)] = share
+    for row in dfs_rows or []:
+        correlations = []
+        for target in row.get("targets", []):
+            match = re.match(r"^\\\\([^\\]+)\\(.+)$", str(target))
+            host, share_name = match.groups() if match else ("", "")
+            observed = by_share.get((host.lower(), share_name.lower()))
+            if observed:
+                if observed.get("writable"):
+                    access = "READ / WRITE"
+                elif observed.get("readable") is True:
+                    access = "READ"
+                elif observed.get("readable") is False:
+                    access = "DENIED"
+                else:
+                    access = "UNKNOWN"
+            else:
+                access = "UNKNOWN"
+            correlations.append({"target": target, "host": host, "share": share_name,
+                                 "access": access, "source": "SMB share inventory" if observed else "DFS LDAP"})
+        row["target_access"] = correlations
+    return dfs_rows
 
 
 def normalize_services(hosts):

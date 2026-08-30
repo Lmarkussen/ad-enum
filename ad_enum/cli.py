@@ -31,7 +31,7 @@ from .core.coverage import CoverageReport
 from .anonymous import probe_anonymous_ldap, probe_anonymous_smb
 from .reporting.html import write_html_report
 from .recon import (normalize_mssql, normalize_dfs, normalize_services,
-                    normalize_trust_context, build_privilege_paths)
+                    normalize_trust_context, build_privilege_paths, correlate_dfs_targets)
 from .service_probe import DEFAULT_SERVICES, probe_known_services
 from .access import from_netexec_hosts, merge_access, filter_redundant_access_targets
 from .adapters.netexec import NetExecAdapter
@@ -761,14 +761,24 @@ def main():
     console.complete("MSSQL analysis complete")
     console.activity("Enumerating DFS infrastructure...")
     dfs_inventory = normalize_dfs(collector.raw.get("dfs", []))
+    correlate_dfs_targets(dfs_inventory, share_inventory)
     workspace.write_json(workspace.findings_path("DFS", "namespaces.json"), dfs_inventory)
     workspace.write_json(workspace.findings_path("DFS", "targets.json"),
                          [{"namespace": x["namespace"], "path": x["path"], "target": target,
                            "source": x["source"]} for x in dfs_inventory for target in x["targets"]])
     workspace.write_json(workspace.findings_path("DFS", "findings.json"), [])
     workspace.write_text(workspace.module_dir("DFS") / "findings.txt", "")
-    coverage.add("DFS / namespace inventory", "PASS" if dfs_inventory else "PARTIAL",
+    dfs_collection = collector.raw.get("dfs_collection", {})
+    dfs_status = ("PASS" if dfs_collection.get("status") == "PASS" else "FAILED") if dfs_collection else "PARTIAL"
+    dfs_detail = (f"{len(dfs_inventory)} namespace/link observation(s)"
+                  if dfs_collection.get("status") == "PASS" else
+                  (dfs_collection.get("error", "collection status unavailable") if dfs_collection else "LDAP DFS query not performed"))
+    coverage.add("DFS / LDAP query", dfs_status, dfs_detail)
+    coverage.add("DFS / namespace inventory", dfs_status,
                  f"{len(dfs_inventory)} namespace/link observation(s)")
+    coverage.add("DFS / target parsing", dfs_status, f"{sum(len(x.get('targets', [])) for x in dfs_inventory)} target(s)")
+    coverage.add("DFS / SMB correlation", dfs_status,
+                 f"{sum(1 for x in dfs_inventory for y in x.get('target_access', []) if y.get('source') == 'SMB share inventory')} observed target(s)")
     console.complete("DFS analysis complete")
     console.activity("Checking remote management exposure...")
     service_inventory = normalize_services([x.attributes for x in inventory.records.get("observed_hosts", {}).values()])
