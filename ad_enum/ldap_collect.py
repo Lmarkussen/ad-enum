@@ -231,7 +231,10 @@ class Collector:
                         # results for the other narrowly selected objects.
                         continue
         except Exception:
-            raw_security_descriptors = []
+            # Preserve descriptors collected before a server-side or
+            # per-target exception.  ACL coverage is intentionally narrow;
+            # one protected target must not erase successful results.
+            pass
         raw_trusts, raw_laps_schema = [], []
         try:
             conn.search(f"CN=System,{root}", "(objectClass=trustedDomain)",
