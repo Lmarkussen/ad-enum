@@ -10,6 +10,16 @@ def test_netexec_share_table_is_normalized():
     assert rows[0]["readable"] and rows[0]["writable"]
 
 
+def test_netexec_prefixed_share_table_is_normalized():
+    rows = parse_netexec_shares(
+        "SMB 10.0.0.41 445 MECM Share Permissions Remark\n"
+        "SMB 10.0.0.41 445 MECM share_iso READ,WRITE iso share\n"
+        "SMB 10.0.0.41 445 MECM C$ Default share\n"
+        "SMB 10.0.0.41 445 MECM IPC$ READ Remote IPC\n")
+    assert [(x["share"], x["readable"], x["writable"]) for x in rows] == [
+        ("share_iso", True, True), ("IPC$", True, False)]
+
+
 def test_ad_dns_records_merge_into_existing_map_without_overwrite():
     dns = {"records": [{"fqdn": "dc.lab", "ip_addresses": ["10.0.0.1"],
                         "ipv4_addresses": ["10.0.0.1"], "ipv6_addresses": [],

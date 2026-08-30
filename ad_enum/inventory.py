@@ -86,6 +86,21 @@ def parse_netexec_shares(text):
     rows = []
     current_host = None
     for line in (text or "").splitlines():
+        # NetExec 1.5 prefixes table rows with the transport, address, port,
+        # and host name.  Parse that stable envelope before interpreting the
+        # optional permissions column; blank permissions remain UNKNOWN.
+        prefixed = re.match(r"^SMB\s+(\S+)\s+\d+\s+(\S+)\s+(\S+)\s*(.*)$", line)
+        if prefixed:
+            ip, host, share, remainder = prefixed.groups()
+            if share.upper() not in {"SHARE", "-----", "[*]", "[+]"}:
+                fields = remainder.split(None, 1)
+                permission = fields[0].upper().replace(",", "") if fields and fields[0].upper() in {"READ", "WRITE", "READWRITE", "READ,WRITE"} else ""
+                if permission:
+                    rows.append({"host": host, "ip": ip, "share": share, "unc": f"\\\\{host}\\{share}",
+                                 "readable": "READ" in permission, "writable": "WRITE" in permission,
+                                 "source": "netexec", "raw": line})
+            current_host = {"ip": ip, "host": host}
+            continue
         host_match = re.search(r"SMB\s+(\S+)\s+([^\s]+).*\(name:([^\)]+)\)", line)
         if host_match:
             current_host = {"ip": host_match.group(1), "host": host_match.group(3).strip()}
