@@ -187,7 +187,7 @@ def main():
     workspace.write_json(workspace.findings_path("SCCM", "inventory.json"), sccm_result)
     workspace.write_json(workspace.findings_path("SCCM", "topology.json"), sccm_result)
     workspace.write_json(workspace.raw_dir("SCCM") / "ldap-publication.json", collector.raw.get("sccm", []))
-    workspace.write_json(workspace.findings_path("SCCM", "endpoints.json"), sccm_result.get("publication", {}).get("endpoints", []))
+    workspace.write_json(workspace.findings_path("SCCM", "endpoints.json"), sccm_result.get("endpoint_probes", []))
     workspace.write_json(workspace.findings_path("SCCM", "pxe.json"), sccm_result.get("pxe", {}))
     coverage.add("SCCM / infrastructure discovery", "PASS", f"{len(sccm_result['hosts'])} candidate host(s)")
     relay_findings = []
@@ -344,7 +344,7 @@ def main():
             finding_id=f"delegation:{item.kind}:{item.target}", category="DELEGATION", rule=item.kind,
             title=("RBCD" if item.kind == "rbcd" else
                    ("Constrained + protocol transition" if item.kind == "constrained" and item.protocol_transition else
-                    f"{item.kind.replace('-', ' ').title()} delegation")), affected_object=item.target,
+                    f"{item.kind.replace('-', ' ').title()} delegation")) + f" — {item.target}", affected_object=item.target,
             domain=workspace.domain, sources=[{"source": source, "observed": True} for source in item.sources],
             evidence=item.as_dict(), status="corroborated" if len(item.sources) > 1 else "single-source", priority="medium",
             workspace_artifacts=["Delegation/inventory.json"], first_seen_scan=workspace.scan_id,
