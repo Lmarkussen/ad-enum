@@ -68,6 +68,10 @@ def _finding_lines(findings):
             if category == "ACL":
                 title = f"Account control — {item.get('affected_object', title)}"
             lines.append(title)
+            objects = _affected_object_values(item)
+            if objects:
+                lines.append("  Affected objects ..")
+                lines.extend(f"    {value}" for value in objects)
             if item.get("rule") == "ESC1":
                 lines.append(f"  Status ........... {status}")
                 if item.get("status") in {"disagreement", "live-confirmed disagreement"}:
@@ -99,6 +103,30 @@ def _finding_lines(findings):
                 lines.append(f"  Status ........... {status}")
             lines.append("")
     return lines
+
+
+def _affected_object_values(item, limit=None):
+    """Extract stable display identities from aggregated finding evidence."""
+    evidence = item.get("evidence", {}) or {}
+    values = evidence.get("affected_objects")
+    if values is None:
+        for key in ("hosts", "accounts", "groups", "computers", "shares", "templates", "gpos", "objects"):
+            if isinstance(evidence.get(key), list):
+                values = evidence[key]
+                break
+    if not isinstance(values, list) or len(values) <= 1:
+        return []
+    result = []
+    for value in values:
+        if isinstance(value, dict):
+            value = (value.get("fqdn") or value.get("host") or value.get("name") or
+                     value.get("account") or value.get("share") or value.get("dn") or value.get("ip"))
+        if value not in (None, ""):
+            result.append(str(value))
+    result = list(dict.fromkeys(result))
+    if limit is not None and len(result) > limit:
+        return result[:limit] + [f"... and {len(result) - limit} more"]
+    return result
 
 
 def _results_text(root, target, external_results, inventory, cas, templates, all_findings,
@@ -1123,6 +1151,11 @@ def main():
                 if item.get("category") == "ACL":
                     title = f"Account control — {item.get('affected_object', title)}"
                 console.status(f"  {title}", display_status)
+                objects = _affected_object_values(item, limit=10)
+                if objects:
+                    console.line("    Affected objects ..")
+                    for value in objects:
+                        console.line(f"      {value}")
                 if item["rule"] == "ESC1":
                     console.line(f"    Status ........... {display_status.upper()}")
                     if item.get("status") in {"disagreement", "live-confirmed disagreement"}:

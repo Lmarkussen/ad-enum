@@ -49,6 +49,17 @@ def test_html_shows_smb_share_access():
     assert "FILE01" in report
 
 
+def test_html_lists_aggregated_affected_objects():
+    model = _model()
+    model["findings"] = [{"category": "SMB", "title": "SMB signing not required — 2 host(s)",
+                           "status": "single-source", "evidence": {
+                               "hosts": [{"fqdn": "MECM.sccm.lab"}, {"fqdn": "CLIENT.sccm.lab"}]}}]
+    report = render_html(model)
+    assert "Affected objects (2)" in report
+    assert "MECM.sccm.lab" in report
+    assert "CLIENT.sccm.lab" in report
+
+
 def test_sccm_artifact_policy_is_bounded():
     limits = SCCMArtifactLimits(max_files=2, max_file_bytes=10, max_total_bytes=15)
     selected = bounded_artifact_candidates([{"name": "a", "size": 10}, {"name": "b", "size": 6}, {"name": "c", "size": 1}], limits)

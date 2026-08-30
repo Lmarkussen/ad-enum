@@ -40,6 +40,19 @@ def test_results_report_shows_normalized_smb_share_access(tmp_path):
     assert "Unknown ........ UNKNOWN" in report
 
 
+def test_aggregated_finding_lists_affected_objects(tmp_path):
+    finding = {"category": "SMB", "rule": "signing-not-required",
+               "title": "SMB signing not required — 3 host(s)", "status": "single-source",
+               "evidence": {"hosts": [{"fqdn": "MECM.sccm.lab"},
+                                         {"host": "MSSQL.sccm.lab"},
+                                         {"ip": "10.1.10.43"}]}}
+    report = _report(tmp_path, [finding])
+    assert "Affected objects .." in report
+    assert "MECM.sccm.lab" in report
+    assert "MSSQL.sccm.lab" in report
+    assert "10.1.10.43" in report
+
+
 def test_console_field_has_one_status_column():
     lines = [Console.field(label, "PASS") for label in
              ("Native LDAP", "BloodHound", "Certipy", "LDAPDomainDump", "NetExec")]

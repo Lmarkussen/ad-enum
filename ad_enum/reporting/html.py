@@ -13,6 +13,26 @@ def _json(value):
     return _e(json.dumps(value, indent=2, sort_keys=True, default=str))
 
 
+def _affected_objects(finding):
+    evidence = finding.get("evidence", {}) or {}
+    values = evidence.get("affected_objects")
+    if values is None:
+        for key in ("hosts", "accounts", "groups", "computers", "shares", "templates", "gpos", "objects"):
+            if isinstance(evidence.get(key), list):
+                values = evidence[key]
+                break
+    if not isinstance(values, list) or len(values) <= 1:
+        return []
+    result = []
+    for value in values:
+        if isinstance(value, dict):
+            value = (value.get("fqdn") or value.get("host") or value.get("name") or
+                     value.get("account") or value.get("share") or value.get("dn") or value.get("ip"))
+        if value not in (None, "") and str(value) not in result:
+            result.append(str(value))
+    return result
+
+
 def render_html(model):
     findings = model.get("findings", [])
     grouped = {}
@@ -28,6 +48,9 @@ def render_html(model):
             evidence = finding.get("evidence", {}) or {}
             sources = finding.get("sources", []) or []
             details = "" if not evidence else f"<details><summary>Evidence</summary><pre>{_json(evidence)}</pre></details>"
+            objects = _affected_objects(finding)
+            object_block = (f"<details open><summary>Affected objects ({len(objects)})</summary><ul>" +
+                            "".join(f"<li>{_e(value)}</li>" for value in objects) + "</ul></details>") if objects else ""
             cards.append(
                 '<article class="finding">'
                 f"<h3>{_e(finding.get('title', 'Finding'))}</h3>"
@@ -35,7 +58,7 @@ def render_html(model):
                 f"<span class=\"meta\">Object: {_e(finding.get('affected_object', 'unknown'))}</span></div>"
                 f"<dl><dt>Impact</dt><dd>{_e(evidence.get('impact', finding.get('impact', '')) or '—')}</dd>"
                 f"<dt>Sources</dt><dd>{_e(', '.join(str(x.get('source', '')) for x in sources if isinstance(x, dict)) or '—')}</dd></dl>"
-                f"{details}</article>"
+                f"{object_block}{details}</article>"
             )
         finding_sections.append(f'<section id="finding-{_e(category.lower())}"><h2>{_e(category)}</h2>{"".join(cards)}</section>')
 
