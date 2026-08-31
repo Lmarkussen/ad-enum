@@ -1837,11 +1837,8 @@ def main():
                     console.line("    Affected objects")
                     for value in objects:
                         console.line(f"      {value}")
-                if item["rule"] == "ESC1":
-                    fields = [("Status", display_status.upper())]
-                    if item.get("status") in {"disagreement", "live-confirmed disagreement"}:
-                        fields.append(("Note", "Certipy did not classify this template as ESC1"))
-                    for line in _compact_field_lines(fields, indent="    "):
+                if item.get("category") == "ADCS" and item.get("rule") in {"ESC1", "ESC7"}:
+                    for line in _adcs_detail_lines(item, indent="    ", status=display_status.upper()):
                         console.line(line)
                 elif item["rule"] == "Kerberoastable-account":
                     for line in _compact_field_lines([

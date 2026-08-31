@@ -1,7 +1,7 @@
 """Certipy adapter.
 
-Certipy is an optional oracle. The adapter consumes its JSON schema and never
-uses Certipy's human-readable output as an API.
+Certipy is an optional oracle. JSON remains the primary input, with a narrow
+human-readable fallback for CA evidence that Certipy omits from JSON output.
 """
 import json
 import os
@@ -70,9 +70,201 @@ class CertipyAdapter(ToolAdapter):
     source_name = "certipy"
     executable = "certipy"
 
+    @staticmethod
+    def _text_values(lines, start, base_indent):
+        """Return indented scalar/list values and the first following field."""
+        values = []
+        index = start
+        while index < len(lines):
+            line = lines[index]
+            if not line.strip():
+                index += 1
+                continue
+            indent = len(line) - len(line.lstrip())
+            if indent <= base_indent:
+                break
+            values.append(line.strip())
+            index += 1
+        return values, index
+
+    @staticmethod
+    def _text_scalar(values):
+        if not values:
+            return ""
+        return values[0] if len(values) == 1 else values
+
+    @classmethod
+    def _parse_text_ca(cls, lines, start, end):
+        """Parse one indented Certipy CA block without depending on spacing."""
+        ca = {"Access Rights": {}, "[!] Vulnerabilities": {}}
+        index = start
+        while index < end:
+            line = lines[index]
+            if not line.strip():
+                index += 1
+                continue
+            indent = len(line) - len(line.lstrip())
+            text = line.strip()
+            if indent == 4 and text.endswith(":"):
+                key = text[:-1]
+                values, index = cls._text_values(lines, index + 1, indent)
+                if key in {"CA Name", "DNS Name", "Certificate Subject", "Owner"}:
+                    ca[key] = cls._text_scalar(values)
+                elif key in {"User Enrollable Principals", "User ACL Principals"}:
+                    ca[key] = values
+                continue
+            if indent == 4 and text.rstrip(":") == "Permissions":
+                index += 1
+                while index < end:
+                    nested = lines[index]
+                    if not nested.strip():
+                        index += 1
+                        continue
+                    nested_indent = len(nested) - len(nested.lstrip())
+                    nested_text = nested.strip()
+                    if nested_indent <= 4:
+                        break
+                    if nested_indent == 6 and nested_text.rstrip(":") == "Access Rights":
+                        index += 1
+                        while index < end:
+                            right_line = lines[index]
+                            if not right_line.strip():
+                                index += 1
+                                continue
+                            right_indent = len(right_line) - len(right_line.lstrip())
+                            right_text = right_line.strip()
+                            if right_indent <= 6:
+                                break
+                            if right_indent == 8 and right_text.endswith(":"):
+                                right = right_text[:-1]
+                                values, index = cls._text_values(lines, index + 1, right_indent)
+                                ca["Access Rights"][right] = values
+                                continue
+                            index += 1
+                        continue
+                    if nested_indent == 6 and nested_text == "Owner:":
+                        values, index = cls._text_values(lines, index + 1, nested_indent)
+                        if values:
+                            ca["Owner"] = cls._text_scalar(values)
+                        continue
+                    index += 1
+                continue
+            if indent == 4 and text.rstrip(":") == "Vulnerabilities":
+                index += 1
+                while index < end:
+                    vulnerability = lines[index]
+                    if not vulnerability.strip():
+                        index += 1
+                        continue
+                    vulnerability_indent = len(vulnerability) - len(vulnerability.lstrip())
+                    vulnerability_text = vulnerability.strip()
+                    if vulnerability_indent <= 4:
+                        break
+                    if vulnerability_indent == 6 and vulnerability_text.endswith(":"):
+                        rule = vulnerability_text[:-1]
+                        values, index = cls._text_values(lines, index + 1, vulnerability_indent)
+                        ca["[!] Vulnerabilities"][rule] = cls._text_scalar(values)
+                        continue
+                    index += 1
+                continue
+            index += 1
+        if not ca["Access Rights"]:
+            ca.pop("Access Rights")
+        if not ca["[!] Vulnerabilities"]:
+            ca.pop("[!] Vulnerabilities")
+        return ca
+
+    @classmethod
+    def _parse_text_output(cls, text):
+        """Parse the CA/evidence portions of Certipy's human-readable output."""
+        lines = str(text or "").splitlines()
+        cas = []
+        template_state = "NOT OBSERVED"
+        index = 0
+        while index < len(lines):
+            line = lines[index]
+            stripped = line.strip()
+            indent = len(line) - len(line.lstrip())
+            if stripped.rstrip(":") == "Certificate Authorities" and indent == 0:
+                index += 1
+                while index < len(lines):
+                    candidate = lines[index]
+                    if not candidate.strip():
+                        index += 1
+                        continue
+                    candidate_indent = len(candidate) - len(candidate.lstrip())
+                    candidate_text = candidate.strip()
+                    if candidate_indent == 0:
+                        break
+                    if candidate_indent == 2 and candidate_text.isdigit():
+                        start = index + 1
+                        end = start
+                        while end < len(lines):
+                            next_line = lines[end]
+                            if next_line.strip():
+                                next_indent = len(next_line) - len(next_line.lstrip())
+                                if next_indent <= 2:
+                                    break
+                            end += 1
+                        cas.append(cls._parse_text_ca(lines, start, end))
+                        index = end
+                        continue
+                    index += 1
+                continue
+            if stripped.rstrip(":") == "Certificate Templates" and indent == 0:
+                values, index = cls._text_values(lines, index + 1, indent)
+                if any("could not find any certificate templates" in value.casefold()
+                       for value in values):
+                    template_state = "UNAVAILABLE"
+                elif values:
+                    template_state = "AVAILABLE"
+                else:
+                    template_state = "UNAVAILABLE"
+                continue
+            index += 1
+        return cas, template_state
+
+    def from_text(self, text, *, detail="human-readable output"):
+        cas, template_state = self._parse_text_output(text)
+        assessments = {}
+        return CertipySnapshot(cas=cas, assessments=assessments,
+                               provenance=Provenance(self.source_name, "find", detail),
+                               raw_data={}, template_enumeration_state=template_state)
+
+    @staticmethod
+    def _merge_text_data(snapshot, text_snapshot):
+        """Fill missing JSON fields from stdout while preserving JSON as primary."""
+        by_name = {str(item.get("CA Name", "")).casefold(): item for item in snapshot.cas
+                   if item.get("CA Name")}
+        by_dns = {str(item.get("DNS Name", "")).casefold(): item for item in snapshot.cas
+                  if item.get("DNS Name")}
+        for parsed in text_snapshot.cas:
+            existing = by_name.get(str(parsed.get("CA Name", "")).casefold())
+            if existing is None:
+                existing = by_dns.get(str(parsed.get("DNS Name", "")).casefold())
+            if existing is None:
+                snapshot.cas.append(parsed)
+                existing = parsed
+            for key, value in parsed.items():
+                if key not in existing or existing[key] in (None, "", [], {}):
+                    existing[key] = value
+                elif isinstance(existing[key], dict) and isinstance(value, dict):
+                    for nested_key, nested_value in value.items():
+                        existing[key].setdefault(nested_key, nested_value)
+            if existing.get("CA Name"):
+                by_name[str(existing["CA Name"]).casefold()] = existing
+            if existing.get("DNS Name"):
+                by_dns[str(existing["DNS Name"]).casefold()] = existing
+        if snapshot.template_enumeration_state == "NOT OBSERVED":
+            snapshot.template_enumeration_state = text_snapshot.template_enumeration_state
+
     def from_json(self, data_or_path):
         if isinstance(data_or_path, (str, os.PathLike)):
-            data = json.loads(Path(data_or_path).read_text())
+            text = Path(data_or_path).read_text()
+            try:
+                data = json.loads(text)
+            except json.JSONDecodeError:
+                return self.from_text(text, detail=str(data_or_path))
             detail = str(data_or_path)
         else:
             data = data_or_path
@@ -129,6 +321,7 @@ class CertipyAdapter(ToolAdapter):
             if proc.returncode != 0 or output is None:
                 raise RuntimeError(f"Certipy JSON collection failed ({proc.returncode}): {proc.stderr[-500:]}")
             snapshot = self.from_json(output)
+            self._merge_text_data(snapshot, self.from_text(proc.stdout))
             safe_cmd = ["<password>" if password is not None and part == password else part for part in cmd]
             snapshot.provenance = Provenance(self.source_name, "find -json", " ".join(safe_cmd))
             if workspace is not None:

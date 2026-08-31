@@ -1,0 +1,54 @@
+Certificate Authorities
+  0
+    CA Name:
+        Example-CA
+
+    DNS Name:
+        ca1.example.test
+
+    Certificate Subject:
+        CN=Example-CA, DC=example, DC=test
+
+    Web Enrollment:
+        HTTP Enabled: False
+        HTTPS Enabled: False
+
+    User Specified SAN:
+        Disabled
+
+    Request Disposition:
+        Issue
+
+    Enforce Encryption for Requests:
+        Enabled
+
+    Permissions
+      Owner:
+        EXAMPLE\Administrators
+
+      Access Rights
+        ManageCa:
+            EXAMPLE\Administrators
+            EXAMPLE\Domain Admins
+            EXAMPLE\Enterprise Admins
+
+        ManageCertificates:
+            EXAMPLE\Administrators
+            EXAMPLE\Domain Admins
+            EXAMPLE\Enterprise Admins
+
+        Enroll:
+            EXAMPLE\Authenticated Users
+
+    User Enrollable Principals:
+        EXAMPLE\Authenticated Users
+
+    User ACL Principals:
+        EXAMPLE\Administrators
+
+    Vulnerabilities
+      ESC7:
+        User has dangerous permissions.
+
+Certificate Templates:
+    Could not find any certificate templates

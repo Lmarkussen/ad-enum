@@ -1,7 +1,89 @@
+from pathlib import Path
+
 from ad_enum.adapters.certipy import CertipyAdapter
 from ad_enum.cli import _finding_lines, _results_text
 from ad_enum.core.workspace import ScanWorkspace
 from ad_enum.inventory import DomainInventory
+
+
+REAL_CERTIPY_FIXTURE = Path(__file__).parent / "fixtures" / "certipy_real_format.txt"
+
+
+def test_real_certipy_text_format_preserves_ca_evidence_and_template_failure():
+    snapshot = CertipyAdapter().from_json(REAL_CERTIPY_FIXTURE)
+
+    assert snapshot.template_enumeration_state == "UNAVAILABLE"
+    assert len(snapshot.cas) == 1
+    ca = snapshot.cas[0]
+    assert ca["CA Name"] == "Example-CA"
+    assert ca["DNS Name"] == "ca1.example.test"
+    assert ca["Owner"] == r"EXAMPLE\Administrators"
+    assert ca["Access Rights"]["ManageCa"] == [
+        r"EXAMPLE\Administrators", r"EXAMPLE\Domain Admins", r"EXAMPLE\Enterprise Admins"]
+    assert ca["Access Rights"]["ManageCertificates"] == [
+        r"EXAMPLE\Administrators", r"EXAMPLE\Domain Admins", r"EXAMPLE\Enterprise Admins"]
+    assert ca["Access Rights"]["Enroll"] == [r"EXAMPLE\Authenticated Users"]
+    assert ca["User ACL Principals"] == [r"EXAMPLE\Administrators"]
+    records = snapshot.vulnerability_records()
+    assert len(records) == 1
+    assert records[0]["rule"] == "ESC7"
+    normalized = snapshot.normalized_cas()[0]
+    assert normalized.name == "Example-CA"
+    assert normalized.hostname == "ca1.example.test"
+    assert normalized.evidence["raw"]["User ACL Principals"] == [r"EXAMPLE\Administrators"]
+
+
+def test_real_certipy_text_evidence_fills_json_snapshot_without_replacing_primary_data():
+    adapter = CertipyAdapter()
+    snapshot = adapter.from_json({
+        "Certificate Authorities": {"0": {"CA Name": "Example-CA"}},
+        "Certificate Templates": {},
+    })
+    text_snapshot = adapter.from_text(REAL_CERTIPY_FIXTURE.read_text())
+
+    adapter._merge_text_data(snapshot, text_snapshot)
+
+    assert snapshot.cas[0]["DNS Name"] == "ca1.example.test"
+    assert snapshot.cas[0]["User ACL Principals"] == [r"EXAMPLE\Administrators"]
+    assert snapshot.template_enumeration_state == "UNAVAILABLE"
+    assert snapshot.raw_data["Certificate Authorities"]["0"]["CA Name"] == "Example-CA"
+
+
+def test_real_certipy_text_evidence_reaches_esc7_renderer_and_filters_acl_principals():
+    snapshot = CertipyAdapter().from_text(REAL_CERTIPY_FIXTURE.read_text())
+    record = snapshot.vulnerability_records()[0]
+    finding = {
+        "category": record["category"], "rule": record["rule"],
+        "title": f"{record['rule']} — {record['affected_object']}",
+        "status": "single-source", "sources": [{"source": record["source"], "vulnerable": True}],
+        "evidence": {"certipy": record["evidence"]},
+    }
+    output = "\n".join(_finding_lines([finding]))
+
+    assert "CA                   Example-CA" in output
+    assert "CA DNS               ca1.example.test" in output
+    assert r"Effective principal  EXAMPLE\Administrators" in output
+    assert "Rights               ManageCA, ManageCertificates" in output
+    assert "EXAMPLE\\Domain Admins" not in output
+    assert "EXAMPLE\\Enterprise Admins" not in output
+    assert "Enroll" not in output
+
+
+def test_real_certipy_template_failure_drives_accurate_esc1_note():
+    snapshot = CertipyAdapter().from_text(REAL_CERTIPY_FIXTURE.read_text())
+    finding = {
+        "category": "ADCS", "rule": "ESC1", "title": "ESC1 — Example-ESC1-Template",
+        "status": "single-source", "sources": [{"source": "ldap-native", "vulnerable": True}],
+        "evidence": {
+            "ca_name": "Example-CA", "ca_dns": "ca1.example.test",
+            "template": "Example-ESC1-Template",
+            "certipy_template_enumeration": snapshot.template_enumeration_state,
+        },
+    }
+    output = "\n".join(_finding_lines([finding]))
+
+    assert "Note      Certipy could not enumerate certificate templates" in output
+    assert "did not classify this template" not in output
 
 
 def test_certipy_empty_template_section_is_retained_as_unavailable():
