@@ -1,4 +1,6 @@
-from ad_enum.network import build_dns_map, parse_networkhound
+import copy
+
+from ad_enum.network import build_dns_map, dns_map_host_count, dns_map_rows, dns_map_text, parse_networkhound
 from ad_enum.gpo import inspect_file, normalize_gpos
 from ad_enum.posture import (normalize_trusts, normalize_laps, normalize_gpo_links,
                              attach_gpo_links, analyze_effective_acls)
@@ -20,6 +22,44 @@ def test_networkhound_opengraph_normalization():
     result = parse_networkhound({"graph": {"nodes": [{"id": "S-1", "kinds": ["Computer"], "properties": {"ip_addresses": ["10.1.10.41"]}}, {"id": "N-1", "kinds": ["Subnet"], "properties": {"subnet": "10.1.10.0/24"}}], "edges": [{"kind": "LocatedIn", "start": {"value": "S-1"}, "end": {"value": "N-1"}}]}})
     assert result["records"][0]["object_sid"] == "S-1"
     assert result["records"][0]["subnet"] == "10.1.10.0/24"
+
+
+def test_dns_map_text_is_sorted_deduplicated_and_preserves_known_aliases():
+    dns_map = {"records": [
+        {"fqdn": "file1.example.test", "short_name": "FILE1", "ip_addresses": ["192.0.2.11"]},
+        {"fqdn": "dc1.example.test", "short_name": "DC1", "ip_addresses": ["192.0.2.10", "192.0.2.10"],
+         "aliases": ["dc.example.test"]},
+        {"fqdn": "file1.example.test", "short_name": "FILE1", "ip_addresses": ["192.0.2.11"]},
+    ]}
+
+    original = copy.deepcopy(dns_map)
+    assert dns_map_rows(dns_map) == [
+        ("192.0.2.10", "dc1.example.test", "dc.example.test"),
+        ("192.0.2.10", "dc1.example.test", "DC1"),
+        ("192.0.2.11", "file1.example.test", "FILE1"),
+    ]
+    assert dns_map_text(dns_map) == (
+        "192.0.2.10    dc1.example.test    dc.example.test\n"
+        "192.0.2.10    dc1.example.test    DC1\n"
+        "192.0.2.11    file1.example.test    FILE1\n"
+    )
+    assert dns_map_host_count(dns_map) == 2
+    assert dns_map == original
+
+
+def test_dns_map_export_does_not_trigger_resolution():
+    calls = []
+    inv = DomainInventory()
+    inv.add("computers", "S-1", {"dNSHostName": "dc1.example.test"}, "native-ldap")
+
+    def resolver(host, port, type):
+        calls.append(host)
+        return [(None, None, None, None, ("192.0.2.10", port))]
+
+    result = build_dns_map(inv, resolver=resolver)
+    calls_after_build = len(calls)
+    dns_map_text(result)
+    assert len(calls) == calls_after_build
 
 
 def test_gpo_metadata_and_cpassword_preserve_discovered_value():

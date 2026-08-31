@@ -3,7 +3,8 @@ import json
 
 from ad_enum.cli import (_access_summary_lines, _acl_detail_lines, _compact_field_lines,
                          _cred1_summary_lines, _finding_detail_lines, _finding_lines, _results_text,
-                         _service_summary_lines, _smb_share_access_lines)
+                         _networkhound_summary_lines, _service_summary_lines,
+                         _smb_share_access_lines, _write_networkhound_dns_map)
 from ad_enum.core.console import Console
 from ad_enum.core.workspace import ScanWorkspace
 from ad_enum.inventory import DomainInventory
@@ -33,6 +34,56 @@ def test_results_report_contains_consolidated_group_and_target_secret(tmp_path):
     assert "SyntheticOnly-123!" in report
     assert "[GPO]" not in report.split("------------[ GPO ]------------", 1)[1].splitlines()[2]
     assert "\x1b[" not in report
+
+
+def test_networkhound_dns_map_export_and_report_reference_are_compact(tmp_path):
+    workspace = ScanWorkspace(tmp_path, "example.test", scan_id="scan-one")
+    dns_map = {"records": [
+        {"fqdn": "file1.example.test", "short_name": "FILE1", "ip_addresses": ["192.0.2.11"]},
+        {"fqdn": "dc1.example.test", "short_name": "DC1", "ip_addresses": ["192.0.2.10"]},
+    ]}
+
+    reference = _write_networkhound_dns_map(workspace, dns_map)
+    assert reference == "NetworkHound/dns-map.txt"
+    assert (workspace.root / reference).read_text() == (
+        "192.0.2.10    dc1.example.test    DC1\n"
+        "192.0.2.11    file1.example.test    FILE1\n"
+    )
+
+    report = _results_text("example.test", "dc1.example.test", {}, DomainInventory(), [], [], [],
+                           workspace, host_identities=dns_map,
+                           networkhound_map_reference=reference)
+    section = report.split("NetworkHound\n", 1)[1].split("\nCorrelation", 1)[0]
+    assert "Hosts resolved  2" in section
+    assert "DNS map         NetworkHound/dns-map.txt" in section
+    assert "file1.example.test" not in section
+    assert "192.0.2.11" not in section
+    assert "\x1b[" not in report
+
+
+def test_networkhound_large_map_stays_out_of_human_readable_summary(tmp_path):
+    workspace = ScanWorkspace(tmp_path, "example.test", scan_id="scan-one")
+    records = [{"fqdn": f"host{index:03d}.example.test", "short_name": f"HOST{index:03d}",
+                "ip_addresses": [f"198.51.{100 + (index - 1) // 254}.{(index - 1) % 254 + 1}"]}
+               for index in range(1, 501)]
+    dns_map = {"records": records}
+
+    reference = _write_networkhound_dns_map(workspace, dns_map)
+    exported = (workspace.root / reference).read_text().splitlines()
+    assert len(exported) == 500
+    assert exported[0].startswith("198.51.100.1    host001.example.test")
+    assert "host500.example.test" in "\n".join(exported)
+
+    summary = "\n".join(_networkhound_summary_lines(dns_map, map_reference=reference))
+    report = _results_text("example.test", "dc1.example.test", {}, DomainInventory(), [], [], [],
+                           workspace, host_identities=dns_map,
+                           networkhound_map_reference=reference)
+    assert "host001.example.test" not in summary
+    assert "198.51.100.1" not in summary
+    assert "Hosts resolved  500" in report
+    assert "NetworkHound/dns-map.txt" in report
+    assert "host001.example.test" not in report
+    assert "198.51.100.1" not in report
 
 
 def test_password_policy_uses_display_label_without_changing_category_or_value():

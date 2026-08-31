@@ -78,6 +78,73 @@ def build_dns_map(inventory, networkhound=None, resolver=socket.getaddrinfo):
                         for ip in sorted({ip for x in records.values() for ip in x["ip_addresses"]})}}
 
 
+def dns_map_rows(dns_map):
+    """Return deterministic, grep-friendly rows for the normalized DNS map.
+
+    The normalized JSON remains the source of truth.  A row is emitted for
+    every known address/FQDN pair, with existing short names or aliases kept
+    as optional supporting columns.
+    """
+    rows = set()
+    for record in (dns_map or {}).get("records", []):
+        if not isinstance(record, dict):
+            continue
+        fqdn = str(record.get("fqdn") or "").strip().rstrip(".")
+        if not fqdn:
+            continue
+        addresses = record.get("ip_addresses") or record.get("ips") or []
+        if isinstance(addresses, str):
+            addresses = [addresses]
+        aliases = []
+        known_aliases = record.get("aliases") or []
+        if isinstance(known_aliases, str):
+            known_aliases = [known_aliases]
+        for value in [record.get("short_name"), *known_aliases]:
+            if isinstance(value, (list, tuple, set)):
+                values = value
+            else:
+                values = [value]
+            for alias in values:
+                alias = str(alias or "").strip().rstrip(".")
+                if (alias and alias.casefold() != fqdn.casefold()
+                        and alias.casefold() not in {x.casefold() for x in aliases}):
+                    aliases.append(alias)
+        for value in addresses:
+            address = str(value or "").strip()
+            if not address:
+                continue
+            if aliases:
+                for alias in aliases:
+                    rows.add((address, fqdn, alias))
+            else:
+                rows.add((address, fqdn, ""))
+
+    def sort_key(row):
+        try:
+            address = ipaddress.ip_address(row[0])
+            address_key = (0, address.version, int(address))
+        except ValueError:
+            address_key = (1, 0, row[0].casefold())
+        return (*address_key, row[1].casefold(), row[2].casefold())
+
+    return sorted(rows, key=sort_key)
+
+
+def dns_map_text(dns_map):
+    """Render the normalized DNS map as plain text, without a header."""
+    rows = dns_map_rows(dns_map)
+    rendered = "\n".join("    ".join(value for value in row if value) for row in rows)
+    return rendered + ("\n" if rows else "")
+
+
+def dns_map_host_count(dns_map):
+    """Count resolved canonical hosts, not address rows or aliases."""
+    return len({str(record.get("fqdn") or "").strip().rstrip(".").casefold()
+                for record in (dns_map or {}).get("records", [])
+                if isinstance(record, dict) and record.get("fqdn")
+                and (record.get("ip_addresses") or record.get("ips"))})
+
+
 def parse_networkhound(data):
     """Accept NetworkHound's OpenGraph JSON without depending on its classes."""
     records = []

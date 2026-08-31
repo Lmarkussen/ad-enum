@@ -21,7 +21,7 @@ from .inventory import (native_inventory, DomainInventory, build_targets, sensit
                         parse_netexec_smb, extract_attribute_secret, is_standard_admin_share)
 from .sccm import (discover as discover_sccm, normalize_relayking,
                    probe_management_points, cred1_candidates)
-from .network import build_dns_map
+from .network import build_dns_map, dns_map_text, dns_map_host_count
 from .dns_enum import normalize_zones, normalize_records, merge_into_dns_map, normalize_password_settings
 from .gpo import normalize_gpos, collect_sysvol, collect_netlogon, inspect_file, parse_security_settings
 from .posture import (normalize_smb, normalize_trusts, normalize_gpo_acls, normalize_laps,
@@ -112,6 +112,24 @@ def _cred1_summary_lines(item, *, indent="  ", width=None, secret_style=None):
             lines.extend(_compact_field_lines(fields, indent=indent + "  ", width=width,
                                               value_style=secret_style, highlight_labels={"Password"}))
     return lines
+
+
+def _networkhound_summary_lines(dns_map, *, map_reference="", indent="  "):
+    """Render only the compact reference to the exported normalized DNS map."""
+    fields = [("Hosts resolved", dns_map_host_count(dns_map))]
+    if map_reference:
+        fields.append(("DNS map", map_reference))
+    return ["NetworkHound", *_compact_field_lines(fields, indent=indent)]
+
+
+def _write_networkhound_dns_map(workspace, dns_map):
+    """Export the existing normalized DNS map without performing any lookup."""
+    rendered = dns_map_text(dns_map)
+    if not rendered:
+        return ""
+    path = workspace.findings_path("NetworkHound", "dns-map.txt")
+    workspace.write_text(path, rendered)
+    return workspace.relative(path)
 
 
 def _adcs_source_text(item):
@@ -1037,7 +1055,8 @@ def _smb_share_access_lines(shares, access_style=None):
 
 def _results_text(root, target, external_results, inventory, cas, templates, all_findings,
                   workspace, *, corroborated=0, disagreements=0, smb_shares=None, services=None,
-                  access_records=None, cred1=None, host_identities=None):
+                  access_records=None, cred1=None, host_identities=None,
+                  networkhound_map_reference=""):
     lines = ["AD-Enum", "", "Target"]
     lines.extend(_compact_field_lines([
         ("Domain", root), ("Domain Controller", target),
@@ -1060,6 +1079,8 @@ def _results_text(root, target, external_results, inventory, cas, templates, all
         inventory_fields.append((label, counts.get(key, 0)))
     inventory_fields.extend([("CAs", len(cas)), ("Templates", len(templates))])
     lines.extend(_compact_field_lines(inventory_fields, indent="  "))
+    lines.extend(["", *_networkhound_summary_lines(host_identities,
+                                                     map_reference=networkhound_map_reference)])
     lines.extend(["", "Correlation", Console.field("Corroborated", corroborated),
                   Console.field("Disagreements", disagreements)])
     shares = smb_shares or []
@@ -1269,6 +1290,7 @@ def main():
     workspace.write_json(workspace.findings_path("NetworkHound", "inventory.json"),
                          networkhound_result.get("inventory", {}) if isinstance(networkhound_result, dict) else {})
     workspace.write_json(workspace.findings_path("NetworkHound", "dns-map.json"), dns_map)
+    networkhound_map_reference = _write_networkhound_dns_map(workspace, dns_map)
     pso_inventory = normalize_password_settings(collector.raw.get("password_settings", []))
     resultants = []
     for record in inventory.records.get("users", {}).values():
@@ -2144,7 +2166,8 @@ def main():
                                 workspace, corroborated=len(statuses), disagreements=len(disagreements),
                                 smb_shares=share_inventory, services=service_inventory,
                                 access_records=access_records, cred1=sccm_result.get("cred1"),
-                                host_identities=dns_map)
+                                host_identities=dns_map,
+                                networkhound_map_reference=networkhound_map_reference)
     workspace.write_text_atomic(workspace.root / "results.txt", report_text)
     # Keep a non-destructive historical copy for this scan ID.
     workspace.write_json(workspace.history_root / "scan.json", {"domain": root, "target": target,
@@ -2224,6 +2247,9 @@ def main():
         inventory_fields.append((label, inventory.counts().get(key, 0)))
     inventory_fields.extend([("CAs", len(cas)), ("Templates", len(templates))])
     for line in _compact_field_lines(inventory_fields, indent="  "):
+        console.line(line)
+    console.line()
+    for line in _networkhound_summary_lines(dns_map, map_reference=networkhound_map_reference):
         console.line(line)
     if share_inventory:
         console.line()
