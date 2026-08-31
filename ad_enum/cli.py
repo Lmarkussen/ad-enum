@@ -45,7 +45,8 @@ CATEGORY_ORDER = ("ADCS", "POLICY", "KERBEROS", "ACCOUNT", "DELEGATION",
                   "GPO", "ACL", "LAPS", "LDAP", "SMB", "RELAY", "SCCM", "TRUSTS")
 
 
-def _compact_field_lines(fields, *, indent="  ", width=None, max_label_width=20):
+def _compact_field_lines(fields, *, indent="  ", width=None, max_label_width=20,
+                         value_style=None, highlight_labels=()):
     """Render aligned field/value rows with wrapped value continuations."""
     fields = [(str(label), "" if value is None else str(value)) for label, value in fields]
     if not fields:
@@ -61,12 +62,14 @@ def _compact_field_lines(fields, *, indent="  ", width=None, max_label_width=20)
         for paragraph in value.splitlines() or [""]:
             chunks.extend(textwrap.wrap(paragraph, width=value_width, break_long_words=True,
                                         break_on_hyphens=False, replace_whitespace=False) or [""])
-        lines.append(f"{indent}{label:<{label_width}}  {chunks[0]}")
-        lines.extend(f"{continuation}{chunk}" for chunk in chunks[1:])
+        style_value = value_style if value_style and label in highlight_labels else None
+        first = style_value(chunks[0]) if style_value else chunks[0]
+        lines.append(f"{indent}{label:<{label_width}}  {first}")
+        lines.extend(f"{continuation}{style_value(chunk) if style_value else chunk}" for chunk in chunks[1:])
     return lines
 
 
-def _cred1_summary_lines(item, *, indent="  ", width=None):
+def _cred1_summary_lines(item, *, indent="  ", width=None, secret_style=None):
     """Render the human-readable CRED-1 summary without changing its data."""
     evidence = item or {}
     lines = _compact_field_lines([
@@ -103,11 +106,13 @@ def _cred1_summary_lines(item, *, indent="  ", width=None):
             fields.append(("Password", secret.get("value", secret.get("password", ""))))
             if secret.get("source_policy"):
                 fields.append(("Source", secret["source_policy"]))
-            lines.extend(_compact_field_lines(fields, indent=indent + "  ", width=width))
+            lines.extend(_compact_field_lines(fields, indent=indent + "  ", width=width,
+                                              value_style=secret_style, highlight_labels={"Password"}))
     return lines
 
 
-def _finding_detail_lines(item, *, indent="    ", width=None, status_override=None):
+def _finding_detail_lines(item, *, indent="    ", width=None, status_override=None,
+                          secret_style=None):
     """Render detailed finding fields while preserving existing semantics."""
     status = status_override if status_override is not None else item.get("status", "").upper()
     evidence = item.get("evidence", {}) or {}
@@ -142,7 +147,10 @@ def _finding_detail_lines(item, *, indent="    ", width=None, status_override=No
         if evidence.get("type"): fields.append(("Type", evidence["type"]))
         if evidence.get("value"):
             fields.append(("cpassword" if item.get("rule") == "gpp-cpassword" else "Value", evidence["value"]))
-        return _compact_field_lines(fields, indent=indent, width=width)
+        value_style = (secret_style if item.get("rule") in
+                       {"gpo-cleartext-credential", "gpp-cpassword"} else None)
+        return _compact_field_lines(fields, indent=indent, width=width, value_style=value_style,
+                                    highlight_labels={"Value", "cpassword"})
     if item.get("category") == "SCCM" and item.get("rule") == "CRED-1":
         lines = _compact_field_lines([
             ("Distribution Point", evidence.get("dp", item.get("affected_object", "unknown"))),
@@ -168,7 +176,8 @@ def _finding_detail_lines(item, *, indent="    ", width=None, status_override=No
         fields.append(("Password", evidence.get("value", "")))
         if evidence.get("source_policy"):
             fields.append(("Source", evidence["source_policy"]))
-        lines.extend(_compact_field_lines(fields, indent=indent + "  ", width=width))
+        lines.extend(_compact_field_lines(fields, indent=indent + "  ", width=width,
+                                          value_style=secret_style, highlight_labels={"Password"}))
         return lines
     if status.lower() in {"single-source", "corroborated"}:
         return []
@@ -373,7 +382,7 @@ def _service_summary_lines(services, limit=None, host_identities=None):
     return lines
 
 
-def _access_summary_lines(access_records, host_identities=None):
+def _access_summary_lines(access_records, host_identities=None, admin_style=None):
     """Render authenticated access grouped by endpoint without changing scope."""
     authenticated = [x for x in (access_records or [])
                      if isinstance(x, dict) and x.get("authentication") == "AUTHENTICATED"]
@@ -408,6 +417,8 @@ def _access_summary_lines(access_records, host_identities=None):
                 str(value.get("protocol") or "UNKNOWN").casefold())):
             protocol = str(item.get("protocol") or "UNKNOWN").upper()
             admin = "   [ADMIN]" if str(item.get("privilege", "")).upper() == "ADMIN" else ""
+            if admin and admin_style:
+                admin = "   " + admin_style("[ADMIN]")
             lines.append(f"    {protocol:<{width}}  AUTHENTICATED{admin}")
     return lines
 
@@ -436,7 +447,7 @@ def _smb_path_is_redundant(share, display_name):
     return normalize(path) == normalize(expected)
 
 
-def _smb_share_access_lines(shares):
+def _smb_share_access_lines(shares, access_style=None):
     """Render the compact, grouped human-readable SMB share summary.
 
     This is presentation-only.  The share dictionaries, including their UNC
@@ -473,7 +484,8 @@ def _smb_share_access_lines(shares):
                 str(item[0].get("host") or item[0].get("ip", "")).casefold(),
                 str(item[0].get("share", "")).casefold())):
             display_name = _smb_display_name(share)
-            lines.append(f"    {display_name:<{width}}  {state}")
+            display_state = access_style(state) if access_style and title == "Administrative shares" else state
+            lines.append(f"    {display_name:<{width}}  {display_state}")
             if share.get("unc") and not _smb_path_is_redundant(share, display_name):
                 lines.append(f"      Path ............. {share['unc']}")
     return lines
@@ -482,22 +494,29 @@ def _smb_share_access_lines(shares):
 def _results_text(root, target, external_results, inventory, cas, templates, all_findings,
                   workspace, *, corroborated=0, disagreements=0, smb_shares=None, services=None,
                   access_records=None, cred1=None, host_identities=None):
-    lines = ["AD-Enum", "", "Target",
-             Console.field("Domain", root), Console.field("DC", target), "",
-             "Collectors", Console.field("Native LDAP", "PASS")]
+    lines = ["AD-Enum", "", "Target"]
+    lines.extend(_compact_field_lines([
+        ("Domain", root), ("Domain Controller", target),
+    ], indent="  "))
+    lines.extend(["", "Collectors"])
+    collector_fields = [("Native LDAP", "PASS")]
     for module_id, label in (("bloodhound", "BloodHound"), ("adcs-certipy", "Certipy"),
                              ("ldapdomaindump", "LDAPDomainDump"), ("netexec", "NetExec")):
         state = external_results.get(module_id, {}).get("status", "NOT CHECKED")
         display = {"PASS": "PASS", "FAILED": "FAILED", "UNAVAILABLE": "NOT AVAILABLE"}.get(state, state)
-        lines.append(Console.field(label, display))
-    lines.extend(["", "Inventory"])
+        collector_fields.append((label, display))
+    lines.extend(_compact_field_lines(collector_fields, indent="  "))
+    lines.append("")
+    lines.append("Inventory")
     counts = inventory.counts()
+    inventory_fields = []
     for key, label in (("users", "Users"), ("groups", "Groups"), ("computers", "Computers"),
                        ("domain_controllers", "Domain Controllers"), ("domains", "Domains"),
                        ("gmsa", "gMSAs")):
-        lines.append(Console.field(label, counts.get(key, 0)))
-    lines.extend([Console.field("CAs", len(cas)), Console.field("Templates", len(templates)), "",
-                  "Correlation", Console.field("Corroborated", corroborated),
+        inventory_fields.append((label, counts.get(key, 0)))
+    inventory_fields.extend([("CAs", len(cas)), ("Templates", len(templates))])
+    lines.extend(_compact_field_lines(inventory_fields, indent="  "))
+    lines.extend(["", "Correlation", Console.field("Corroborated", corroborated),
                   Console.field("Disagreements", disagreements)])
     shares = smb_shares or []
     if shares:
@@ -1617,29 +1636,34 @@ def main():
     console.complete("Analysis complete")
     console.line()
     console.heading("Target")
-    console.line(f"  Domain ............. {root}")
-    console.line(f"  DC ................. {target}")
+    for line in _compact_field_lines([("Domain", root), ("Domain Controller", target)], indent="  "):
+        console.line(line)
     console.line()
     console.heading("Collectors")
-    console.status(Console.field("Native LDAP", "PASS"), "PASS")
+    collector_fields = [("Native LDAP", "PASS")]
     for module_id, label in (("bloodhound", "BloodHound"), ("adcs-certipy", "Certipy"),
                              ("ldapdomaindump", "LDAPDomainDump"), ("netexec", "NetExec")):
         result = external_results.get(module_id, {})
         state = result.get("status", "NOT CHECKED")
         display = {"PASS": "PASS", "FAILED": "FAILED", "UNAVAILABLE": "NOT AVAILABLE"}.get(state, state)
-        console.status(Console.field(label, display), display)
+        collector_fields.append((label, display))
+    collector_lines = _compact_field_lines(collector_fields, indent="  ")
+    for line, (_, display) in zip(collector_lines, collector_fields):
+        console.status(line, display)
     console.line()
     console.heading("Inventory")
+    inventory_fields = []
     for key, label in (("users", "Users"), ("groups", "Groups"), ("computers", "Computers"),
                        ("domain_controllers", "Domain Controllers"), ("domains", "Domains"),
                        ("gmsa", "gMSAs")):
-        console.line(Console.field(label, inventory.counts().get(key, 0)))
-    console.line(Console.field("CAs", len(cas)))
-    console.line(Console.field("Templates", len(templates)))
+        inventory_fields.append((label, inventory.counts().get(key, 0)))
+    inventory_fields.extend([("CAs", len(cas)), ("Templates", len(templates))])
+    for line in _compact_field_lines(inventory_fields, indent="  "):
+        console.line(line)
     if share_inventory:
         console.line()
         console.heading("SMB Share Access")
-        for line in _smb_share_access_lines(share_inventory):
+        for line in _smb_share_access_lines(share_inventory, access_style=console.highlight_admin):
             console.line(line)
     service_lines = _service_summary_lines(service_inventory, host_identities=dns_map)
     if service_lines:
@@ -1647,7 +1671,8 @@ def main():
         console.heading("Service Exposure")
         for line in service_lines:
             console.line(line)
-    access_lines = _access_summary_lines(access_records, host_identities=dns_map)
+    access_lines = _access_summary_lines(access_records, host_identities=dns_map,
+                                         admin_style=console.highlight_admin)
     if access_lines:
         console.line()
         console.heading("Authenticated Access")
@@ -1661,7 +1686,7 @@ def main():
         for index, item in enumerate(cred1_items):
             if index:
                 console.line()
-            for line in _cred1_summary_lines(item, indent="  "):
+            for line in _cred1_summary_lines(item, indent="  ", secret_style=console.highlight_secret):
                 console.line(line)
     console.line()
     console.heading("Findings")
@@ -1729,7 +1754,10 @@ def main():
                     if evidence.get("type"): fields.append(("Type", evidence["type"]))
                     if evidence.get("value"):
                         fields.append(("cpassword" if item.get("rule") == "gpp-cpassword" else "Value", evidence["value"]))
-                    for line in _compact_field_lines(fields, indent="    "):
+                    secret_value = item.get("rule") in {"gpo-cleartext-credential", "gpp-cpassword"}
+                    for line in _compact_field_lines(
+                            fields, indent="    ", value_style=console.highlight_secret if secret_value else None,
+                            highlight_labels={"Value", "cpassword"}):
                         console.line(line)
                 elif item.get("status") not in {"single-source", "corroborated"}:
                     for line in _compact_field_lines([("Status", item.get("status", "").upper())], indent="    "):

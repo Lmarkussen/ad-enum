@@ -1,8 +1,9 @@
 import copy
+import json
 
 from ad_enum.cli import (_access_summary_lines, _compact_field_lines, _cred1_summary_lines,
-                         _finding_lines, _results_text, _service_summary_lines,
-                         _smb_share_access_lines)
+                         _finding_detail_lines, _finding_lines, _results_text,
+                         _service_summary_lines, _smb_share_access_lines)
 from ad_enum.core.console import Console
 from ad_enum.core.workspace import ScanWorkspace
 from ad_enum.inventory import DomainInventory
@@ -15,6 +16,11 @@ def _report(tmp_path, findings):
     workspace = ScanWorkspace(tmp_path, "sccm.lab", scan_id="scan-one")
     return _results_text("SCCM.LAB", "dc.sccm.lab", {}, DomainInventory(), [], [],
                          findings, workspace, corroborated=1, disagreements=0)
+
+
+class TTY(StringIO):
+    def isatty(self):
+        return True
 
 
 def test_results_report_contains_consolidated_group_and_target_secret(tmp_path):
@@ -119,6 +125,111 @@ def test_smb_share_access_console_and_results_use_the_same_lines(tmp_path):
     report_section = report.split("SMB Share Access\n", 1)[1].split("\nFindings", 1)[0].rstrip("\n")
 
     assert console_section == report_section
+
+
+def test_orange_highlights_only_admin_share_access_state():
+    console = Console(stream=TTY())
+    lines = _smb_share_access_lines([
+        {"host": "HOST1", "share": "ADMIN$", "readable": True, "writable": True},
+        {"host": "HOST1", "share": "Public", "readable": True, "writable": True},
+    ], access_style=console.highlight_admin)
+    output = "\n".join(lines)
+
+    assert "\033[38;5;208mREAD / WRITE\033[0m" in output
+    assert "HOST1\\ADMIN$" in output
+    non_admin = next(line for line in lines if "HOST1\\Public" in line)
+    assert "\033[" not in non_admin
+
+
+def test_orange_highlighting_is_clean_for_non_tty_and_no_color():
+    for console in (Console(stream=StringIO()), Console(stream=TTY(), no_color=True)):
+        assert console.highlight_secret("ExampleRecoveredSecret") == "ExampleRecoveredSecret"
+        assert console.highlight_admin("[ADMIN]") == "[ADMIN]"
+
+
+def test_orange_highlights_only_explicit_admin_marker():
+    console = Console(stream=TTY())
+    lines = _access_summary_lines([
+        {"host": "dc1.example.test", "protocol": "RDP",
+         "authentication": "AUTHENTICATED", "privilege": "ADMIN"},
+        {"host": "dc1.example.test", "protocol": "LDAP",
+         "authentication": "AUTHENTICATED", "privilege": "STANDARD"},
+    ], admin_style=console.highlight_admin)
+    output = "\n".join(lines)
+
+    assert "AUTHENTICATED   \033[38;5;208m[ADMIN]\033[0m" in output
+    assert "\033[38;5;208mAUTHENTICATED" not in output
+    assert "LDAP  AUTHENTICATED" in output
+
+
+def test_recovered_secret_value_is_orange_but_labels_are_not():
+    console = Console(stream=TTY())
+    cred_lines = _cred1_summary_lines({
+        "dp": "192.0.2.41", "credentials": [{"type": "variable", "name": "ExampleVariable",
+                                                "value": "ExampleRecoveredSecret"}],
+    }, secret_style=console.highlight_secret)
+    finding_lines = _finding_detail_lines({
+        "rule": "gpo-cleartext-credential", "evidence": {
+            "type": "net use", "value": "AnotherExampleSecret",
+        },
+    }, secret_style=console.highlight_secret)
+    output = "\n".join(cred_lines + finding_lines)
+
+    assert "Password  \033[38;5;208mExampleRecoveredSecret\033[0m" in output
+    assert "Value  \033[38;5;208mAnotherExampleSecret\033[0m" in output
+    assert "\033[38;5;208mPassword" not in output
+    assert "\033[38;5;208mValue" not in output
+
+
+def test_target_collectors_inventory_results_are_clean_aligned_fields(tmp_path):
+    inventory = DomainInventory()
+    for kind, count in (("users", 2), ("groups", 3), ("computers", 1),
+                        ("domain_controllers", 1), ("domains", 1)):
+        for index in range(count):
+            inventory.add(kind, f"{kind}-{index}")
+    report = _results_text(
+        "example.test", "192.0.2.10",
+        {"bloodhound": {"status": "PASS"}, "adcs-certipy": {"status": "PASS"}},
+        inventory, ["CA"], ["Template"], [], ScanWorkspace(tmp_path, "example.test"),
+    )
+    sections = report.split("Target\n", 1)[1].split("Correlation\n", 1)[0]
+
+    assert "Domain Controller  192.0.2.10" in sections
+    assert "BloodHound      PASS" in sections
+    assert "Users               2" in sections
+    assert "Domain Controllers  1" in sections
+    assert "........" not in sections
+
+
+def test_results_text_never_contains_terminal_ansi_sequences(tmp_path):
+    report = _results_text(
+        "example.test", "dc1.example.test", {}, DomainInventory(), [], [], [],
+        ScanWorkspace(tmp_path, "example.test"),
+        smb_shares=[{"host": "HOST1", "share": "ADMIN$", "readable": True, "writable": True}],
+        access_records=[{"host": "dc1.example.test", "protocol": "RDP",
+                         "authentication": "AUTHENTICATED", "privilege": "ADMIN"}],
+        cred1={"dp": "192.0.2.41", "credentials": [{"type": "variable", "name": "ExampleVariable",
+                                                       "value": "ExampleRecoveredSecret"}]},
+    )
+
+    assert "\033[" not in report
+
+
+def test_styled_rendering_does_not_mutate_structured_records():
+    console = Console(stream=TTY())
+    share = {"host": "HOST1", "share": "ADMIN$", "readable": True, "writable": True}
+    access = {"host": "dc1.example.test", "protocol": "RDP",
+              "authentication": "AUTHENTICATED", "privilege": "ADMIN"}
+    cred1 = {"dp": "192.0.2.41", "credentials": [{"type": "variable", "name": "ExampleVariable",
+                                                   "value": "ExampleRecoveredSecret"}]}
+    original = copy.deepcopy((share, access, cred1))
+
+    _smb_share_access_lines([share], access_style=console.highlight_admin)
+    _access_summary_lines([access], admin_style=console.highlight_admin)
+    _cred1_summary_lines(cred1, secret_style=console.highlight_secret)
+
+    assert (share, access, cred1) == original
+    assert "\033[" not in json.dumps((share, access, cred1))
 
 
 def test_aggregated_finding_lists_affected_objects(tmp_path):

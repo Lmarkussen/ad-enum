@@ -8,16 +8,24 @@ class Console:
         self.debug = debug
         enabled = not no_color and getattr(self.stream, "isatty", lambda: False)()
         self.colors = enabled
-        names = ("green", "red", "yellow", "cyan", "blue", "navy", "steel", "dim", "reset")
+        names = ("green", "red", "yellow", "orange", "cyan", "blue", "navy", "steel", "dim", "reset")
         self.c = {x: "" for x in names}
         if enabled:
             self.c.update({"green": "\033[32m", "red": "\033[31m", "yellow": "\033[33m",
                            "cyan": "\033[36m", "blue": "\033[38;5;33m", "navy": "\033[38;5;24m",
-                           "steel": "\033[38;5;67m",
+                           "steel": "\033[38;5;67m", "orange": "\033[38;5;208m",
                            "dim": "\033[2m", "reset": "\033[0m"})
 
     def paint(self, text, color=None):
         return f"{self.c.get(color, '')}{text}{self.c['reset'] if color else ''}"
+
+    def highlight_secret(self, text):
+        """Highlight an explicitly recovered target secret, when interactive."""
+        return self.paint(text, "orange")
+
+    def highlight_admin(self, text):
+        """Highlight explicit administrative-access evidence, when interactive."""
+        return self.paint(text, "orange")
 
     def line(self, text=""):
         print(text, file=self.stream, flush=True)
