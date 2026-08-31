@@ -304,6 +304,16 @@ def _acl_title(item, inventory=None):
     return f"{prefix} — {item.get('affected_object', item.get('title', ''))}"
 
 
+def _finding_title(item, inventory=None):
+    """Return the human-readable finding title without redundant state text."""
+    title = item.get("title", "")
+    if item.get("rule") in {"AS-REP-roastable", "Kerberoastable-account"}:
+        title = re.sub(r"\s+\((?:enabled|disabled)\)$", "", title, flags=re.IGNORECASE)
+    if item.get("category") == "ACL":
+        return _acl_title(item, inventory)
+    return title
+
+
 def _acl_right_values(value):
     values = value if isinstance(value, (list, tuple, set, frozenset)) else str(value or "").split(",")
     result = list(dict.fromkeys(str(right).strip() for right in values if str(right).strip()))
@@ -352,6 +362,12 @@ def _finding_detail_lines(item, *, indent="    ", width=None, status_override=No
         if item.get("status") in {"disagreement", "live-confirmed disagreement"}:
             fields.append(("Note", "Certipy did not classify this template as ESC1"))
         return _compact_field_lines(fields, indent=indent, width=width)
+    if item.get("rule") == "AS-REP-roastable":
+        fields = [("State", "enabled" if evidence.get("enabled") else "disabled")]
+        if "preauthentication_required" in evidence:
+            fields.append(("Pre-auth", "REQUIRED" if evidence["preauthentication_required"]
+                           else "NOT REQUIRED"))
+        return _compact_field_lines(fields, indent=indent, width=width, label_width=18)
     if item.get("rule") == "Kerberoastable-account":
         fields = [("State", "enabled" if evidence.get("enabled") else "disabled"),
                   ("SPNs", len(evidence.get("spns", []))), ("Status", status)]
@@ -359,15 +375,63 @@ def _finding_detail_lines(item, *, indent="    ", width=None, status_override=No
                            ("Password age", "password_age")):
             if key in evidence:
                 fields.append((label, evidence[key]))
-        return _compact_field_lines(fields, indent=indent, width=width)
+        return _compact_field_lines(fields, indent=indent, width=width, label_width=18)
     if item.get("category") == "ACL":
         return _acl_detail_lines(item, indent=indent, width=width, inventory=inventory,
                                  direct_style=direct_style)
-    if item.get("category") == "DELEGATION" and item.get("rule") == "rbcd":
-        return _compact_field_lines([
-            ("Allowed principal", evidence.get("principal_name") or evidence.get("principal_sid", "unknown")),
-            ("Impact", evidence.get("impact", "May impersonate users to Kerberos services on the target")),
-        ], indent=indent, width=width)
+    if item.get("category") == "DELEGATION":
+        rule = item.get("rule")
+        state = "enabled" if evidence.get("enabled") else "disabled"
+        if rule == "rbcd":
+            principals = evidence.get("principals") or []
+            if not isinstance(principals, list):
+                principals = [principals]
+            if not principals and (evidence.get("principal_sid") or evidence.get("principal_name")):
+                principals = [{"sid": evidence.get("principal_sid", ""),
+                               "name": evidence.get("principal_name", "")}]
+            names, sids = [], []
+            for principal in principals:
+                if not isinstance(principal, dict):
+                    continue
+                sid = principal.get("sid", "")
+                name = principal.get("name", "")
+                if not name or str(name).casefold() == str(sid).casefold():
+                    name = _acl_principal_name(sid, {}, inventory)
+                if name:
+                    names.append(str(name))
+                if sid:
+                    sids.append(str(sid))
+            if not names:
+                names = ["unresolved"]
+            fields = [("Allowed principal", ", ".join(dict.fromkeys(names)))]
+            if sids:
+                fields.append(("Principal SID", ", ".join(dict.fromkeys(sids))))
+            fields.append(("Target", evidence.get("target", item.get("affected_object", "unknown"))))
+            impact = evidence.get("impact", "Allowed principal may impersonate users to services on target")
+            fields.append(("Impact", str(impact)[:1].upper() + str(impact)[1:]))
+            return _compact_field_lines(fields, indent=indent, width=width, label_width=18)
+        if rule == "unconstrained":
+            impact = "Host/account may receive delegated Kerberos credentials"
+            return _compact_field_lines([("State", state), ("Impact", impact)],
+                                        indent=indent, width=width, label_width=18)
+        if rule == "constrained":
+            lines = _compact_field_lines([("State", state)], indent=indent, width=width,
+                                          label_width=18)
+            services = evidence.get("targets") or []
+            if isinstance(services, str):
+                services = [services]
+            services = [str(service) for service in services if service not in (None, "")]
+            if services:
+                lines.extend(["", f"{indent}Services"])
+                limit = 8
+                lines.extend(f"{indent}  {service}" for service in services[:limit])
+                if len(services) > limit:
+                    lines.append(f"{indent}  ... and {len(services) - limit} more")
+            lines.extend([""])
+            lines.extend(_compact_field_lines([
+                ("Impact", "Can impersonate users to configured Kerberos services")
+            ], indent=indent, width=width, label_width=18))
+            return lines
     if item.get("rule", "").startswith("gpo-"):
         fields = []
         if evidence.get("file"): fields.append(("File", evidence["file"]))
@@ -439,9 +503,7 @@ def _finding_lines(findings, *, width=None, inventory=None, direct_style=None):
             status = item.get("status", "").upper()
             if item.get("rule") == "ESC1" and status in {"DISAGREEMENT", "LIVE-CONFIRMED DISAGREEMENT"}:
                 status = "CONFIRMED"
-            title = item.get("title", "")
-            if category == "ACL":
-                title = _acl_title(item, inventory)
+            title = _finding_title(item, inventory)
             lines.append(f"  {title}")
             objects = _affected_object_values(item)
             if objects:
@@ -1961,10 +2023,8 @@ def main():
                 display_status = item.get("status")
                 if item.get("rule") == "ESC1" and display_status in {"disagreement", "live-confirmed disagreement"}:
                     display_status = "confirmed"
-                title = item["title"]
+                title = _finding_title(item, inventory)
                 evidence = item.get("evidence", {})
-                if item.get("category") == "ACL":
-                    title = _acl_title(item, inventory)
                 console.line(console.finding_title(f"  {title}"))
                 objects = _affected_object_values(item, limit=10)
                 if objects:
@@ -1974,22 +2034,15 @@ def main():
                 if item.get("category") == "ADCS" and item.get("rule") in {"ESC1", "ESC7"}:
                     for line in _adcs_detail_lines(item, indent="    ", status=display_status.upper()):
                         console.line(line)
-                elif item["rule"] == "Kerberoastable-account":
-                    for line in _compact_field_lines([
-                            ("State", "enabled" if evidence.get("enabled") else "disabled"),
-                            ("SPNs", len(evidence.get("spns", []))),
-                            ("Status", item.get("status", "").upper()),
-                    ], indent="    "):
+                elif item.get("rule") in {"AS-REP-roastable", "Kerberoastable-account"}:
+                    for line in _finding_detail_lines(item, indent="    "):
                         console.line(line)
                 elif item.get("category") == "ACL":
                     for line in _acl_detail_lines(item, indent="    ", inventory=inventory,
                                                   direct_style=console.highlight_control):
                         console.line(line)
-                elif item.get("category") == "DELEGATION" and item.get("rule") == "rbcd":
-                    for line in _compact_field_lines([
-                            ("Allowed principal", evidence.get("principal_name") or evidence.get("principal_sid", "unknown")),
-                            ("Impact", evidence.get("impact", "May impersonate users to Kerberos services on the target")),
-                    ], indent="    "):
+                elif item.get("category") == "DELEGATION":
+                    for line in _finding_detail_lines(item, indent="    "):
                         console.line(line)
                 elif item.get("rule", "").startswith("gpo-"):
                     fields = []

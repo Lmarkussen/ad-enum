@@ -485,6 +485,76 @@ def test_finding_details_use_aligned_rows_and_wrap_long_values():
     assert findings == original
 
 
+def test_kerberos_titles_and_details_separate_state_and_preauth():
+    findings = [
+        {"category": "KERBEROS", "rule": "AS-REP-roastable",
+         "title": "AS-REP roastable — example-asrep (enabled)",
+         "status": "single-source", "evidence": {
+             "enabled": True, "preauthentication_required": False}},
+        {"category": "KERBEROS", "rule": "Kerberoastable-account",
+         "title": "Kerberoastable — svc-sql (enabled)", "status": "corroborated",
+         "evidence": {"enabled": True, "spns": ["MSSQLSvc/sql.example.test:1433",
+                                                  "HOST/sql.example.test"]}},
+    ]
+
+    output = "\n".join(_finding_lines(findings))
+
+    assert "AS-REP roastable — example-asrep (enabled)" not in output
+    assert "AS-REP roastable — example-asrep\n    State               enabled\n    Pre-auth            NOT REQUIRED" in output
+    assert "Kerberoastable — svc-sql (enabled)" not in output
+    assert "Kerberoastable — svc-sql\n    State               enabled\n    SPNs                2\n    Status              CORROBORATED" in output
+
+
+def test_delegation_renderer_surfaces_state_services_impact_and_rbcd_identity(tmp_path):
+    inventory = DomainInventory()
+    inventory.add("users", "S-1-5-21-rbcd", {
+        "sAMAccountName": "rbcd-user", "domain": "EXAMPLE", "objectClass": ["user"]})
+    findings = [
+        {"category": "DELEGATION", "rule": "unconstrained",
+         "title": "Unconstrained delegation — example-unconst", "status": "single-source",
+         "evidence": {"target": "example-unconst", "enabled": True}},
+        {"category": "DELEGATION", "rule": "constrained",
+         "title": "Constrained + protocol transition — example-const", "status": "single-source",
+         "evidence": {"target": "example-const", "enabled": True,
+                      "targets": ["cifs/server.example.test", "http/server.example.test"]}},
+        {"category": "DELEGATION", "rule": "rbcd", "title": "RBCD — CLIENT01$", "status": "single-source",
+         "evidence": {"target": "CLIENT01$", "enabled": True,
+                      "principals": [{"sid": "S-1-5-21-rbcd", "name": "S-1-5-21-rbcd"}],
+                      "impact": "allowed principal may impersonate users to services on the target"}},
+    ]
+    original = copy.deepcopy(findings)
+
+    output = "\n".join(_finding_lines(findings, inventory=inventory))
+    report = _results_text("example.test", "dc1.example.test", {}, inventory, [], [], findings,
+                           ScanWorkspace(tmp_path, "example.test"))
+
+    assert "Unconstrained delegation — example-unconst\n    State               enabled" in output
+    assert "Host/account may receive delegated Kerberos credentials" in output
+    assert "Constrained + protocol transition — example-const\n    State               enabled" in output
+    assert "    Services\n      cifs/server.example.test\n      http/server.example.test" in output
+    assert "Can impersonate users to configured Kerberos services" in output
+    assert "RBCD — CLIENT01$\n    Allowed principal   EXAMPLE\\rbcd-user" in output
+    assert "Principal SID       S-1-5-21-rbcd" in output
+    assert "Target              CLIENT01$" in output
+    assert "Allowed principal may impersonate users to services on the target" in output
+    assert "\033[" not in report
+    assert findings == original
+
+
+def test_delegation_renderer_keeps_unresolved_rbcd_sid():
+    finding = {"category": "DELEGATION", "rule": "rbcd", "title": "RBCD — CLIENT01$",
+               "status": "single-source", "evidence": {
+                   "target": "CLIENT01$", "enabled": True,
+                   "principals": [{"sid": "S-1-5-21-unknown", "name": "S-1-5-21-unknown"}]}}
+
+    output = "\n".join(_finding_lines([finding]))
+
+    assert "Allowed principal   S-1-5-21-unknown" in output
+    assert "Principal SID       S-1-5-21-unknown" in output
+    assert "Allowed principal  unknown" not in output
+    assert "orange" not in output.lower()
+
+
 def _acl_inventory():
     inventory = DomainInventory()
     inventory.add("groups", "S-1-5-21-group", {
