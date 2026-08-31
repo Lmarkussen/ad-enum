@@ -1120,20 +1120,11 @@ def _results_text(root, target, external_results, inventory, cas, templates, all
     return "\n".join(lines)
 
 
-def main():
-    argv = sys.argv[1:]
-    if argv and argv[0] == "auto-config" and "--restore" in argv[1:]:
-        from .core.autoconfig import restore_hosts
-        result = restore_hosts()
-        print(f"Auto-config restore: {result['status']}")
-        return 0
-    if argv and argv[0] == "doctor":
-        from .doctor import report
-        return report()
-    if argv and argv[0] == "scan":
-        argv = argv[1:]
+def _build_parser():
     p = argparse.ArgumentParser(description="Enumerate AD CS and explain ESC1 candidates")
-    p.add_argument("--dc", "--dc-ip", "-dc-ip", dest="dc"); p.add_argument("--port", type=int, default=None); p.add_argument("-domain", "--domain", required=True)
+    p.add_argument("-dc-ip", "--dc-ip", "-dc", "--dc", dest="dc", metavar="DC_IP",
+                   help="domain controller IP address")
+    p.add_argument("--port", type=int, default=None); p.add_argument("-domain", "--domain", required=True)
     p.add_argument("-u", "--username", required=True); p.add_argument("-p", "--password", help="omit to prompt")
     p.add_argument("--ldaps", action="store_true"); p.add_argument("--force-kerb", action="store_true")
     p.add_argument("--auto-config", action="store_true"); p.add_argument("--sync-time", action="store_true")
@@ -1152,7 +1143,22 @@ def main():
     # Keeping the default as the current directory makes new scans land in
     # ./<canonical-domain>/ while preserving the explicit --output-dir API.
     p.add_argument("--output-dir", default=".")
-    a = p.parse_args(argv)
+    return p
+
+
+def main():
+    argv = sys.argv[1:]
+    if argv and argv[0] == "auto-config" and "--restore" in argv[1:]:
+        from .core.autoconfig import restore_hosts
+        result = restore_hosts()
+        print(f"Auto-config restore: {result['status']}")
+        return 0
+    if argv and argv[0] == "doctor":
+        from .doctor import report
+        return report()
+    if argv and argv[0] == "scan":
+        argv = argv[1:]
+    a = _build_parser().parse_args(argv)
     console = Console(no_color=a.no_color, verbose=a.verbose, debug=a.verbose)
     console.banner(files("ad_enum").joinpath("assets/banner.txt").read_text(encoding="utf-8"))
     if a.password is None:
