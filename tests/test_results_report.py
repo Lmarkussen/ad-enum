@@ -1,4 +1,5 @@
-from ad_enum.cli import _results_text, _smb_share_access_lines
+from ad_enum.cli import (_access_summary_lines, _results_text, _service_summary_lines,
+                         _smb_share_access_lines)
 from ad_enum.core.console import Console
 from ad_enum.core.workspace import ScanWorkspace
 from ad_enum.inventory import DomainInventory
@@ -136,7 +137,106 @@ def test_results_report_shows_authenticated_access_without_privilege_inference(t
                                {"host": "DC.sccm.lab", "protocol": "SSH",
                                 "authentication": "AUTHENTICATED", "privilege": "UNKNOWN"}])
     assert "Authenticated Access" in report
-    assert "DC.sccm.lab  SSH ........ AUTHENTICATED" in report
+    assert "  DC.sccm.lab\n    SSH  AUTHENTICATED" in report
+
+
+def test_service_exposure_is_grouped_by_canonical_host_and_sorted():
+    identities = {"records": [
+        {"fqdn": "dc1.example.test", "short_name": "DC1", "ip_addresses": ["192.0.2.10"]},
+        {"fqdn": "client1.example.test", "short_name": "CLIENT1", "ip_addresses": ["192.0.2.11"]},
+    ]}
+    services = [
+        {"host": "DC1", "ip": "192.0.2.10", "service": "SMB", "port": 445,
+         "reachable": True, "state": "OPEN", "protocol_state": "TCP OPEN"},
+        {"host": "dc1.example.test", "ip": "192.0.2.10", "service": "RDP", "port": 3389,
+         "reachable": True, "state": "OPEN", "protocol_state": "NEGOTIATION ERROR"},
+        {"host": "DC1.EXAMPLE.TEST", "ip": "192.0.2.10", "service": "RPC", "port": 135,
+         "reachable": True, "state": "OPEN", "protocol_state": "TCP OPEN"},
+        {"host": "CLIENT1", "ip": "192.0.2.11", "service": "WinRM HTTP", "port": 5985,
+         "reachable": True, "state": "OPEN", "protocol_state": "PROTOCOL CONFIRMED"},
+        {"host": "client1.example.test", "ip": "192.0.2.11", "service": "HTTPS", "port": 443,
+         "reachable": True, "state": "OPEN", "protocol_state": "TLS ERROR"},
+    ]
+    lines = _service_summary_lines(services, host_identities=identities)
+
+    assert lines == [
+        "  client1.example.test",
+        "    HTTPS/443        TLS ERROR",
+        "    WinRM HTTP/5985  PROTOCOL CONFIRMED",
+        "",
+        "  dc1.example.test",
+        "    RPC/135          TCP OPEN",
+        "    SMB/445          TCP OPEN",
+        "    RDP/3389         NEGOTIATION ERROR",
+    ]
+    assert lines.count("  client1.example.test") == 1
+    assert lines.count("  dc1.example.test") == 1
+    assert {line.strip().split("  ", 1)[0] for line in lines if "/" in line} == {
+        "HTTPS/443", "WinRM HTTP/5985", "RPC/135", "SMB/445", "RDP/3389"
+    }
+
+
+def test_authenticated_access_merges_only_evidenced_aliases_and_shows_explicit_admin():
+    identities = {"records": [
+        {"fqdn": "dc1.example.test", "short_name": "DC1", "ip_addresses": ["192.0.2.10"]},
+        {"fqdn": "dc10.example.test", "short_name": "DC10", "ip_addresses": ["192.0.2.12"]},
+        {"fqdn": "client1.example.test", "short_name": "CLIENT1", "ip_addresses": ["192.0.2.11"]},
+    ]}
+    records = [
+        {"host": "DC1", "ip": "192.0.2.10", "protocol": "SMB",
+         "authentication": "AUTHENTICATED", "privilege": "ADMIN"},
+        {"host": "dc1.example.test", "ip": "192.0.2.10", "protocol": "LDAP",
+         "authentication": "AUTHENTICATED", "privilege": "UNKNOWN"},
+        {"host": "DC1.EXAMPLE.TEST", "ip": "192.0.2.10", "protocol": "RDP",
+         "authentication": "AUTHENTICATED", "privilege": "ADMIN"},
+        {"host": "DC1", "ip": "192.0.2.10", "protocol": "WINRM",
+         "authentication": "AUTHENTICATED", "privilege": "STANDARD"},
+        {"host": "CLIENT1", "ip": "192.0.2.11", "protocol": "SMB",
+         "authentication": "AUTHENTICATED", "privilege": "UNKNOWN"},
+        {"host": "client1.example.test", "ip": "192.0.2.11", "protocol": "RDP",
+         "authentication": "AUTHENTICATED", "privilege": "UNKNOWN"},
+        {"host": "DC10", "ip": "192.0.2.12", "protocol": "SMB",
+         "authentication": "AUTHENTICATED", "privilege": "UNKNOWN"},
+        {"host": "dc10.example.test", "ip": "192.0.2.12", "protocol": "RDP",
+         "authentication": "AUTHENTICATED", "privilege": "UNKNOWN"},
+        {"host": "DC1", "ip": "192.0.2.10", "protocol": "SSH",
+         "authentication": "DENIED", "privilege": "ADMIN"},
+    ]
+    lines = _access_summary_lines(records, host_identities=identities)
+
+    assert lines == [
+        "  client1.example.test  (192.0.2.11)",
+        "    SMB    AUTHENTICATED",
+        "    RDP    AUTHENTICATED",
+        "",
+        "  dc1.example.test  (192.0.2.10)",
+        "    SMB    AUTHENTICATED   [ADMIN]",
+        "    LDAP   AUTHENTICATED",
+        "    RDP    AUTHENTICATED   [ADMIN]",
+        "    WINRM  AUTHENTICATED",
+        "",
+        "  dc10.example.test  (192.0.2.12)",
+        "    SMB    AUTHENTICATED",
+        "    RDP    AUTHENTICATED",
+    ]
+    assert sum("AUTHENTICATED" in line for line in lines) == 8
+    assert sum("[ADMIN]" in line for line in lines) == 2
+    assert not any("SSH" in line for line in lines)
+
+
+def test_results_text_uses_grouped_service_and_access_renderers(tmp_path):
+    identities = {"records": [{"fqdn": "host1.example.test", "short_name": "HOST1",
+                                "ip_addresses": ["192.0.2.20"]}]}
+    services = [{"host": "HOST1", "ip": "192.0.2.20", "service": "RPC", "port": 135,
+                 "reachable": True, "state": "OPEN", "protocol_state": "TCP OPEN"}]
+    access = [{"host": "host1.example.test", "ip": "192.0.2.20", "protocol": "SMB",
+               "authentication": "AUTHENTICATED", "privilege": "UNKNOWN"}]
+    report = _results_text("EXAMPLE.TEST", "host1.example.test", {}, DomainInventory(), [], [], [],
+                           ScanWorkspace(tmp_path, "example.test"), services=services,
+                           access_records=access, host_identities=identities)
+
+    assert "Service Exposure\n  host1.example.test\n    RPC/135  TCP OPEN" in report
+    assert "Authenticated Access\n  host1.example.test  (192.0.2.20)\n    SMB  AUTHENTICATED" in report
 
 
 def test_results_report_shows_complete_cred1_finding_credential(tmp_path):

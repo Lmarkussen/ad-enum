@@ -2,6 +2,7 @@ import argparse
 import hashlib
 import sys
 import ipaddress
+import re
 import shutil
 import socket
 from importlib.resources import files
@@ -155,25 +156,175 @@ def _affected_object_values(item, limit=None):
     return result
 
 
-def _service_summary_lines(services, limit=None):
-    """Render only observed/open services, preserving protocol state."""
-    open_services = [x for x in (services or []) if x.get("reachable") or x.get("state") == "OPEN"]
-    open_services.sort(key=lambda x: (str(x.get("host", "")).lower(), x.get("port") or 0))
+def _host_parts(item):
+    raw_host = item.get("host") or item.get("hostname") or item.get("name") or item.get("ip") or "unknown"
+    host = str(raw_host).strip().rstrip(".")
+    ip = str(item.get("ip") or "").strip()
+    suffix = re.search(r"\s+\(([^()]+)\)$", host)
+    if suffix:
+        candidate = suffix.group(1).strip()
+        try:
+            ipaddress.ip_address(candidate)
+        except ValueError:
+            pass
+        else:
+            if not ip:
+                ip = candidate
+            host = host[:suffix.start()].rstrip().rstrip(".")
+    return host or ip or "unknown", ip
+
+
+def _host_identity_index(host_identities):
+    """Index existing DNS/inventory endpoint evidence for presentation only."""
+    if isinstance(host_identities, dict):
+        records = host_identities.get("records", [])
+    else:
+        records = host_identities or []
+    identities, alias_candidates, ip_candidates = {}, {}, {}
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        fqdn = str(record.get("fqdn") or record.get("hostname") or "").strip().rstrip(".")
+        if not fqdn or "." not in fqdn:
+            continue
+        identity = fqdn.casefold()
+        item = identities.setdefault(identity, {"display": fqdn, "ips": set()})
+        values = record.get("ip_addresses") or record.get("ips") or record.get("ip") or []
+        if isinstance(values, str):
+            values = [values]
+        for value in values:
+            value = str(value).strip()
+            if value:
+                item["ips"].add(value.casefold())
+                ip_candidates.setdefault(value.casefold(), set()).add(identity)
+        aliases = {fqdn.casefold()}
+        short_name = str(record.get("short_name") or fqdn.split(".", 1)[0]).strip()
+        if short_name:
+            aliases.add(short_name.casefold())
+        for alias in aliases:
+            alias_candidates.setdefault(alias, set()).add(identity)
+    return {"identities": identities, "aliases": alias_candidates, "ips": ip_candidates}
+
+
+def _host_identity(item, identity_index):
+    host, ip = _host_parts(item)
+    aliases = identity_index["aliases"].get(host.casefold(), set())
+    by_ip = identity_index["ips"].get(ip.casefold(), set()) if ip else set()
+    identity = None
+    if len(aliases) == 1:
+        candidate = next(iter(aliases))
+        known_ips = identity_index["identities"][candidate]["ips"]
+        if not ip or not known_ips or ip.casefold() in known_ips:
+            identity = candidate
+    if identity is None and len(by_ip) == 1:
+        identity = next(iter(by_ip))
+    if identity is not None:
+        return ("identity", identity), identity_index["identities"][identity]["display"], host, ip
+    if ip:
+        return ("ip", ip.casefold()), "", host, ip
+    return ("host", host.casefold()), "", host, ip
+
+
+def _host_groups(items, host_identities=None):
+    identity_index = _host_identity_index(host_identities)
+    groups = {}
+    for item in items:
+        key, canonical, host, ip = _host_identity(item, identity_index)
+        group = groups.setdefault(key, {"canonical": canonical, "hosts": set(), "ips": set(), "items": []})
+        group["hosts"].add(host)
+        if ip:
+            group["ips"].add(ip)
+        group["items"].append(item)
+    for group in groups.values():
+        if not group["canonical"]:
+            candidates = sorted(group["hosts"], key=lambda value: ("." not in value, value.casefold()))
+            group["canonical"] = candidates[0] if candidates else sorted(group["ips"])[0]
+    return groups
+
+
+def _port_sort(value):
+    try:
+        return 0, int(value)
+    except (TypeError, ValueError):
+        return 1, str(value or "").casefold()
+
+
+def _service_label(item):
+    return f"{item.get('service') or item.get('name') or 'Service'}/{item.get('port', '')}"
+
+
+def _service_summary_lines(services, limit=None, host_identities=None):
+    """Render observed services grouped by canonical host, preserving states."""
+    open_services = [x for x in (services or [])
+                     if isinstance(x, dict) and (x.get("reachable") or x.get("state") == "OPEN")]
+    open_services.sort(key=lambda x: (str(x.get("host") or x.get("ip", "")).casefold(),
+                                      _port_sort(x.get("port")),
+                                      str(x.get("service") or x.get("name") or "").casefold()))
     if limit is not None:
         open_services = open_services[:limit]
+    groups = _host_groups(open_services, host_identities)
+    rows = []
+    for group in groups.values():
+        unique = {}
+        for item in group["items"]:
+            key = (str(item.get("service") or item.get("name") or "").casefold(),
+                   str(item.get("port", "")), str(item.get("transport", "")).casefold(),
+                   str(item.get("protocol_state", "TCP OPEN")))
+            unique.setdefault(key, item)
+        group["items"] = list(unique.values())
+        rows.extend((_service_label(item), item.get("protocol_state", "TCP OPEN"))
+                    for item in group["items"])
+    width = max((len(label) for label, _ in rows), default=0)
     lines = []
-    for item in open_services:
-        label = f"{item.get('service', 'Service')}/{item.get('port', '')}"
-        lines.append(f"  {item.get('host') or item.get('ip', 'unknown')}  {label} ........ {item.get('protocol_state', 'TCP OPEN')}")
+    for group in sorted(groups.values(), key=lambda value: value["canonical"].casefold()):
+        if lines:
+            lines.append("")
+        lines.append(f"  {group['canonical']}")
+        for item in sorted(group["items"], key=lambda value: (
+                _port_sort(value.get("port")),
+                str(value.get("service") or value.get("name") or "").casefold(),
+                str(value.get("protocol_state", "TCP OPEN")).casefold())):
+            label = _service_label(item)
+            lines.append(f"    {label:<{width}}  {item.get('protocol_state', 'TCP OPEN')}")
     return lines
 
 
-def _access_summary_lines(access_records):
+def _access_summary_lines(access_records, host_identities=None):
+    """Render authenticated access grouped by endpoint without changing scope."""
+    authenticated = [x for x in (access_records or [])
+                     if isinstance(x, dict) and x.get("authentication") == "AUTHENTICATED"]
+    groups = _host_groups(authenticated, host_identities)
+    protocol_order = {name: index for index, name in enumerate(("SMB", "LDAP", "SSH", "RDP", "WINRM", "MSSQL"))}
+    rows = []
+    for group in groups.values():
+        unique = {}
+        for item in group["items"]:
+            protocol = str(item.get("protocol") or "UNKNOWN").upper()
+            key = (protocol, str(item.get("port", "")), str(item.get("privilege", "")).upper())
+            unique.setdefault(key, item)
+        group["items"] = list(unique.values())
+        rows.extend((str(item.get("protocol") or "UNKNOWN").upper(), item) for item in group["items"])
+    width = max((len(protocol) for protocol, _ in rows), default=0)
     lines = []
-    for item in access_records or []:
-        if item.get("authentication") != "AUTHENTICATED":
-            continue
-        lines.append(f"  {item.get('host', 'unknown')}  {item.get('protocol', 'UNKNOWN')} ........ AUTHENTICATED")
+    for group in sorted(groups.values(), key=lambda value: value["canonical"].casefold()):
+        if lines:
+            lines.append("")
+        header = f"  {group['canonical']}"
+        ips = sorted(group["ips"])
+        try:
+            canonical_is_ip = bool(ipaddress.ip_address(group["canonical"]))
+        except ValueError:
+            canonical_is_ip = False
+        if ips and not canonical_is_ip:
+            header += f"  ({', '.join(ips)})"
+        lines.append(header)
+        for item in sorted(group["items"], key=lambda value: (
+                protocol_order.get(str(value.get("protocol") or "UNKNOWN").upper(), len(protocol_order)),
+                _port_sort(value.get("port")),
+                str(value.get("protocol") or "UNKNOWN").casefold())):
+            protocol = str(item.get("protocol") or "UNKNOWN").upper()
+            admin = "   [ADMIN]" if str(item.get("privilege", "")).upper() == "ADMIN" else ""
+            lines.append(f"    {protocol:<{width}}  AUTHENTICATED{admin}")
     return lines
 
 
@@ -246,7 +397,7 @@ def _smb_share_access_lines(shares):
 
 def _results_text(root, target, external_results, inventory, cas, templates, all_findings,
                   workspace, *, corroborated=0, disagreements=0, smb_shares=None, services=None,
-                  access_records=None, cred1=None):
+                  access_records=None, cred1=None, host_identities=None):
     lines = ["AD-Enum", "", "Target",
              Console.field("Domain", root), Console.field("DC", target), "",
              "Collectors", Console.field("Native LDAP", "PASS")]
@@ -267,10 +418,10 @@ def _results_text(root, target, external_results, inventory, cas, templates, all
     shares = smb_shares or []
     if shares:
         lines.extend(["", "SMB Share Access", *_smb_share_access_lines(shares)])
-    service_lines = _service_summary_lines(services)
+    service_lines = _service_summary_lines(services, host_identities=host_identities)
     if service_lines:
         lines.extend(["", "Service Exposure", *service_lines])
-    access_lines = _access_summary_lines(access_records)
+    access_lines = _access_summary_lines(access_records, host_identities=host_identities)
     if access_lines:
         lines.extend(["", "Authenticated Access", *access_lines])
     if cred1:
@@ -1334,7 +1485,8 @@ def main():
     report_text = _results_text(root, target, external_results, inventory, cas, templates, all_findings,
                                 workspace, corroborated=len(statuses), disagreements=len(disagreements),
                                 smb_shares=share_inventory, services=service_inventory,
-                                access_records=access_records, cred1=sccm_result.get("cred1"))
+                                access_records=access_records, cred1=sccm_result.get("cred1"),
+                                host_identities=dns_map)
     workspace.write_text_atomic(workspace.root / "results.txt", report_text)
     # Keep a non-destructive historical copy for this scan ID.
     workspace.write_json(workspace.history_root / "scan.json", {"domain": root, "target": target,
@@ -1415,13 +1567,13 @@ def main():
         console.heading("SMB Share Access")
         for line in _smb_share_access_lines(share_inventory):
             console.line(line)
-    service_lines = _service_summary_lines(service_inventory, limit=20)
+    service_lines = _service_summary_lines(service_inventory, host_identities=dns_map)
     if service_lines:
         console.line()
         console.heading("Service Exposure")
         for line in service_lines:
             console.line(line)
-    access_lines = _access_summary_lines(access_records)
+    access_lines = _access_summary_lines(access_records, host_identities=dns_map)
     if access_lines:
         console.line()
         console.heading("Authenticated Access")
