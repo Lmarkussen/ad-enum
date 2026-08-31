@@ -1,4 +1,7 @@
-from ad_enum.cli import (_access_summary_lines, _results_text, _service_summary_lines,
+import copy
+
+from ad_enum.cli import (_access_summary_lines, _compact_field_lines, _cred1_summary_lines,
+                         _finding_lines, _results_text, _service_summary_lines,
                          _smb_share_access_lines)
 from ad_enum.core.console import Console
 from ad_enum.core.workspace import ScanWorkspace
@@ -125,7 +128,7 @@ def test_aggregated_finding_lists_affected_objects(tmp_path):
                                          {"host": "MSSQL.sccm.lab"},
                                          {"ip": "10.1.10.43"}]}}
     report = _report(tmp_path, [finding])
-    assert "Affected objects .." in report
+    assert "Affected objects" in report
     assert "MECM.sccm.lab" in report
     assert "MSSQL.sccm.lab" in report
     assert "10.1.10.43" in report
@@ -251,10 +254,123 @@ def test_results_report_shows_complete_cred1_finding_credential(tmp_path):
                             "value": "ADEnum-CRED1-Test-Secret",
                             "source_policy": "Policy-A"}}
     report = _report(tmp_path, [finding])
-    assert "Unique secrets ..... 1" in report
+    assert "Unique secrets" not in report
+    assert "Unique secrets ..... 1" not in report
     assert "Recovered credential" in report
     assert "ADEnum-CRED1-Test-Secret" in report
     assert "SyntheticName" in report
+
+
+def test_cred1_summary_is_grouped_compact_and_preserves_data():
+    item = {
+        "dp": "192.0.2.41", "site_code": "EX1", "interface": "eth0",
+        "wds": "CONFIRMED", "pxe": "CONFIRMED", "tftp": "CONFIRMED",
+        "boot_var": "RECOVERED", "media_identity": "RECOVERED",
+        "assignment": "RECEIVED", "policies": 5, "boot_file": "UNKNOWN",
+        "media_protection": "UNKNOWN", "secret_inspection": "COMPLETE",
+        "credentials": [{"type": "task_sequence_variable", "name": "ExampleVariable",
+                         "value": "ExampleRecoveredSecret"}],
+        "operator_password": "OperatorOnlySecret",
+    }
+    original = copy.deepcopy(item)
+    lines = _cred1_summary_lines(item, width=80)
+    output = "\n".join(lines)
+
+    assert "PXE / WDS" in output
+    assert "Inspection" in output
+    assert "Recovered credential" in output
+    assert "ExampleRecoveredSecret" in output
+    assert "OperatorOnlySecret" not in output
+    assert output.count("Unique secrets") == 1
+    assert "...." not in output
+    assert item == original
+
+
+def test_results_text_uses_compact_cred1_renderer(tmp_path):
+    report = _results_text(
+        "EXAMPLE.TEST", "dc1.example.test", {}, DomainInventory(), [], [], [],
+        ScanWorkspace(tmp_path, "example.test"),
+        cred1={"dp": "192.0.2.41", "site_code": "EX1", "interface": "eth0",
+               "wds": "CONFIRMED", "pxe": "CONFIRMED", "tftp": "CONFIRMED",
+               "boot_var": "RECOVERED", "media_identity": "RECOVERED",
+               "assignment": "RECEIVED", "policies": 5,
+               "boot_file": "UNKNOWN", "media_protection": "UNKNOWN",
+               "secret_inspection": "COMPLETE", "credentials": [{
+                   "type": "task_sequence_variable", "name": "ExampleVariable",
+                   "value": "ExampleRecoveredSecret"}],
+        },
+    )
+    section = report.split("SCCM CRED-1 PXE\n", 1)[1].split("\nFindings", 1)[0]
+
+    assert "  Distribution Point  192.0.2.41" in section
+    assert "  PXE / WDS" in section
+    assert "  Inspection" in section
+    assert "ExampleRecoveredSecret" in section
+    assert "...." not in section
+
+
+def test_finding_details_use_aligned_rows_and_wrap_long_values():
+    findings = [
+        {"category": "ADCS", "rule": "ESC1", "title": "ESC1 — Example-Template",
+         "status": "disagreement", "evidence": {}},
+        {"category": "KERBEROS", "rule": "Kerberoastable-account",
+         "title": "Kerberoastable — example-user", "status": "corroborated",
+         "evidence": {"enabled": True, "spns": ["one", "two"]}},
+        {"category": "GPO", "rule": "gpo-script-credential",
+         "title": "Cleartext credential in GPO — Example-GPO", "status": "confirmed",
+         "evidence": {"file": r"\\example.test\Policies\{123}\Machine\Scripts\Startup\example.cmd",
+                      "account": r"EXAMPLE\svc-test", "type": "net use",
+                      "value": "ExampleSecret"}},
+        {"category": "ACL", "rule": "acl", "title": "ignored",
+         "affected_object": "Example-Priv-Group", "status": "confirmed",
+         "evidence": {"principal_sid": "S-1-5-21-example",
+                      "effective_rights": "ResetPassword, WriteProperty, WriteServicePrincipalName, WriteDacl, WriteOwner"}},
+    ]
+    original = copy.deepcopy(findings)
+    output = "\n".join(_finding_lines(findings, width=72))
+
+    assert "------------[ ADCS ]------------" in output
+    assert "------------[ KERBEROS ]------------" in output
+    assert "------------[ GPO ]------------" in output
+    assert "------------[ ACL ]------------" in output
+    assert "Status  CONFIRMED" in output
+    assert "Note    Certipy did not classify this template as ESC1" in output
+    assert "...." not in output
+    assert "WriteServicePrincipalName," in output
+    assert "               WriteDacl, WriteOwner" in output
+    assert r"\\example.test\Policies\{123}\Machine\Scripts\Startup\examp" in output
+    assert "le.cmd" in output
+    assert findings == original
+
+
+def test_simple_findings_remain_compact_and_category_banners_are_preserved():
+    output = "\n".join(_finding_lines([
+        {"category": "ACCOUNT", "rule": "password-never-expires",
+         "title": "Password never expires — example-user", "status": "single-source",
+         "evidence": {}},
+        {"category": "POLICY", "rule": "password-complexity",
+         "title": "Password complexity disabled", "status": "single-source",
+         "evidence": {}},
+    ]))
+
+    assert "------------[ ACCOUNT ]------------" in output
+    assert "------------[ POLICY ]------------" in output
+    assert "Password never expires — example-user\n    Status" not in output
+    assert "Password complexity disabled\n    Status" not in output
+    assert "...." not in output
+
+
+def test_compact_fields_align_continuations_and_keep_long_paths_complete():
+    lines = _compact_field_lines([
+        ("Rights", "ResetPassword, WriteProperty, WriteServicePrincipalName, WriteDacl, WriteOwner"),
+        ("File", r"\\example.test\Policies\{12345678-1234-1234-1234-123456789012}\Machine\Scripts\Startup\very-long-example.cmd"),
+    ], indent="    ", width=60)
+    value_column = 4 + len("Rights") + 2
+
+    assert len(lines) > 2
+    assert all(line.startswith(" " * value_column) for line in lines[1:2])
+    assert "ResetPassword" in "".join(lines)
+    assert "very-long-example.cmd" in "".join(line.strip() for line in lines)
 
 
 def test_console_field_has_one_status_column():

@@ -5,6 +5,7 @@ import ipaddress
 import re
 import shutil
 import socket
+import textwrap
 from importlib.resources import files
 from .ldap_collect import Collector
 from .adcs import scan
@@ -44,7 +45,137 @@ CATEGORY_ORDER = ("ADCS", "POLICY", "KERBEROS", "ACCOUNT", "DELEGATION",
                   "GPO", "ACL", "LAPS", "LDAP", "SMB", "RELAY", "SCCM", "TRUSTS")
 
 
-def _finding_lines(findings):
+def _compact_field_lines(fields, *, indent="  ", width=None, max_label_width=20):
+    """Render aligned field/value rows with wrapped value continuations."""
+    fields = [(str(label), "" if value is None else str(value)) for label, value in fields]
+    if not fields:
+        return []
+    label_width = min(max(len(label) for label, _ in fields), max_label_width)
+    terminal_width = width or shutil.get_terminal_size((100, 24)).columns
+    prefix_width = len(indent) + label_width + 2
+    value_width = max(12, terminal_width - prefix_width)
+    continuation = " " * prefix_width
+    lines = []
+    for label, value in fields:
+        chunks = []
+        for paragraph in value.splitlines() or [""]:
+            chunks.extend(textwrap.wrap(paragraph, width=value_width, break_long_words=True,
+                                        break_on_hyphens=False, replace_whitespace=False) or [""])
+        lines.append(f"{indent}{label:<{label_width}}  {chunks[0]}")
+        lines.extend(f"{continuation}{chunk}" for chunk in chunks[1:])
+    return lines
+
+
+def _cred1_summary_lines(item, *, indent="  ", width=None):
+    """Render the human-readable CRED-1 summary without changing its data."""
+    evidence = item or {}
+    lines = _compact_field_lines([
+        ("Distribution Point", evidence.get("dp", "unknown")),
+        ("Site", evidence.get("site_code", "UNKNOWN")),
+        ("Interface", evidence.get("interface", "UNKNOWN")),
+    ], indent=indent, width=width)
+    lines.extend(["", f"{indent}PXE / WDS"])
+    lines.extend(_compact_field_lines([
+        ("WDS reply", evidence.get("wds", "UNKNOWN")),
+        ("PXE", evidence.get("pxe", "UNKNOWN")),
+        ("TFTP", evidence.get("tftp", "UNKNOWN")),
+        ("boot.var", evidence.get("boot_var", "UNKNOWN")),
+        ("Media identity", evidence.get("media_identity", "UNKNOWN")),
+        ("Assignment", evidence.get("assignment", "UNKNOWN")),
+        ("Policies", evidence.get("policies", 0)),
+    ], indent=indent + "  ", width=width))
+    lines.extend(["", f"{indent}Inspection"])
+    lines.extend(_compact_field_lines([
+        ("Boot metadata", evidence.get("boot_file") or "UNKNOWN"),
+        ("Media protection", evidence.get("media_protection", "UNKNOWN")),
+        ("Secret inspection", evidence.get("secret_inspection", "NOT ATTEMPTED")),
+        ("Unique secrets", len(evidence.get("credentials", []) or [])),
+    ], indent=indent + "  ", width=width))
+    credentials = evidence.get("credentials", []) or []
+    if credentials:
+        lines.extend(["", f"{indent}Recovered credential"])
+        for index, secret in enumerate(credentials):
+            if index:
+                lines.append("")
+            fields = [("Type", secret.get("type", "other")), ("Name", secret.get("name", ""))]
+            if secret.get("username"):
+                fields.append(("Username", secret["username"]))
+            fields.append(("Password", secret.get("value", secret.get("password", ""))))
+            if secret.get("source_policy"):
+                fields.append(("Source", secret["source_policy"]))
+            lines.extend(_compact_field_lines(fields, indent=indent + "  ", width=width))
+    return lines
+
+
+def _finding_detail_lines(item, *, indent="    ", width=None, status_override=None):
+    """Render detailed finding fields while preserving existing semantics."""
+    status = status_override if status_override is not None else item.get("status", "").upper()
+    evidence = item.get("evidence", {}) or {}
+    if item.get("rule") == "ESC1":
+        fields = [("Status", status)]
+        if item.get("status") in {"disagreement", "live-confirmed disagreement"}:
+            fields.append(("Note", "Certipy did not classify this template as ESC1"))
+        return _compact_field_lines(fields, indent=indent, width=width)
+    if item.get("rule") == "Kerberoastable-account":
+        fields = [("State", "enabled" if evidence.get("enabled") else "disabled"),
+                  ("SPNs", len(evidence.get("spns", []))), ("Status", status)]
+        for label, key in (("Privileged", "privileged"), ("Service account", "service_account"),
+                           ("Password age", "password_age")):
+            if key in evidence:
+                fields.append((label, evidence[key]))
+        return _compact_field_lines(fields, indent=indent, width=width)
+    if item.get("category") == "ACL":
+        return _compact_field_lines([
+            ("Principal", evidence.get("principal_sid", "unknown")),
+            ("Rights", evidence.get("effective_rights", "")),
+            ("Impact", "Low-privileged principal can alter or control this object"),
+        ], indent=indent, width=width)
+    if item.get("category") == "DELEGATION" and item.get("rule") == "rbcd":
+        return _compact_field_lines([
+            ("Allowed principal", evidence.get("principal_name") or evidence.get("principal_sid", "unknown")),
+            ("Impact", evidence.get("impact", "May impersonate users to Kerberos services on the target")),
+        ], indent=indent, width=width)
+    if item.get("rule", "").startswith("gpo-"):
+        fields = []
+        if evidence.get("file"): fields.append(("File", evidence["file"]))
+        if evidence.get("account"): fields.append(("Account", evidence["account"]))
+        if evidence.get("type"): fields.append(("Type", evidence["type"]))
+        if evidence.get("value"):
+            fields.append(("cpassword" if item.get("rule") == "gpp-cpassword" else "Value", evidence["value"]))
+        return _compact_field_lines(fields, indent=indent, width=width)
+    if item.get("category") == "SCCM" and item.get("rule") == "CRED-1":
+        lines = _compact_field_lines([
+            ("Distribution Point", evidence.get("dp", item.get("affected_object", "unknown"))),
+            ("Site", evidence.get("site", "UNKNOWN")),
+            ("Interface", evidence.get("interface", "UNKNOWN")),
+        ], indent=indent, width=width)
+        lines.extend(["", f"{indent}PXE / WDS"])
+        lines.extend(_compact_field_lines([
+            ("WDS reply", evidence.get("wds", "UNKNOWN")),
+            ("boot.var", evidence.get("boot_var", "UNKNOWN")),
+            ("Media identity", evidence.get("media_identity", "UNKNOWN")),
+            ("Assignment", evidence.get("assignment", "UNKNOWN")),
+            ("Policies", evidence.get("policies", 0)),
+        ], indent=indent + "  ", width=width))
+        lines.extend(["", f"{indent}Inspection"])
+        # The CRED-1 section owns the aggregate count.  Keep the finding's
+        # status here without repeating that same normalized value below it.
+        lines.extend(_compact_field_lines([("Status", status)], indent=indent + "  ", width=width))
+        lines.extend(["", f"{indent}Recovered credential"])
+        fields = [("Type", evidence.get("type", "other")), ("Name", evidence.get("name", ""))]
+        if evidence.get("username"):
+            fields.append(("Username", evidence["username"]))
+        fields.append(("Password", evidence.get("value", "")))
+        if evidence.get("source_policy"):
+            fields.append(("Source", evidence["source_policy"]))
+        lines.extend(_compact_field_lines(fields, indent=indent + "  ", width=width))
+        return lines
+    if status.lower() in {"single-source", "corroborated"}:
+        return []
+    return _compact_field_lines([("Status", status)], indent=indent, width=width) if status else []
+
+
+def _finding_lines(findings, *, width=None):
     """Render normalized findings without terminal decoration.
 
     This is deliberately also suitable for results.txt: it contains the
@@ -71,63 +202,16 @@ def _finding_lines(findings):
             status = item.get("status", "").upper()
             if item.get("rule") == "ESC1" and status in {"DISAGREEMENT", "LIVE-CONFIRMED DISAGREEMENT"}:
                 status = "CONFIRMED"
-            evidence = item.get("evidence", {}) or {}
             title = item.get("title", "")
             if category == "ACL":
                 title = f"Account control — {item.get('affected_object', title)}"
-            lines.append(title)
+            lines.append(f"  {title}")
             objects = _affected_object_values(item)
             if objects:
-                lines.append("  Affected objects ..")
-                lines.extend(f"    {value}" for value in objects)
-            if item.get("rule") == "ESC1":
-                lines.append(f"  Status ........... {status}")
-                if item.get("status") in {"disagreement", "live-confirmed disagreement"}:
-                    lines.append("  Note ............. Certipy did not classify this template as ESC1")
-            elif item.get("rule") == "Kerberoastable-account":
-                lines.extend([f"  State ............ {'enabled' if evidence.get('enabled') else 'disabled'}",
-                              f"  SPNs ............. {len(evidence.get('spns', []))}",
-                              f"  Status ........... {item.get('status', '').upper()}" ])
-                for label in ("Privileged", "Service account", "Password age"):
-                    key = {"Privileged": "privileged", "Service account": "service_account",
-                           "Password age": "password_age"}[label]
-                    if key in evidence:
-                        lines.append(f"  {label:<18} {evidence[key]}")
-            elif category == "ACL":
-                lines.extend([f"  Principal ........ {evidence.get('principal_sid', 'unknown')}",
-                              f"  Rights ........... {evidence.get('effective_rights', '')}",
-                              "  Impact ........... Low-privileged principal can alter or control this object"])
-            elif category == "DELEGATION" and item.get("rule") == "rbcd":
-                lines.extend([f"  Allowed principal  {evidence.get('principal_name') or evidence.get('principal_sid', 'unknown')}",
-                              f"  Impact ........... {evidence.get('impact', 'May impersonate users to Kerberos services on the target')}"])
-            elif item.get("rule", "").startswith("gpo-"):
-                if evidence.get("file"): lines.append(f"  File ............. {evidence['file']}")
-                if evidence.get("account"): lines.append(f"  Account .......... {evidence['account']}")
-                if evidence.get("type"): lines.append(f"  Type ............. {evidence['type']}")
-                if evidence.get("value"):
-                    label = "cpassword" if item.get("rule") == "gpp-cpassword" else "Value"
-                    lines.append(f"  {label:<18} {evidence['value']}")
-            elif category == "SCCM" and item.get("rule") == "CRED-1":
-                lines.extend([f"  Distribution Point . {evidence.get('dp', item.get('affected_object', 'unknown'))}",
-                              f"  Site ............... {evidence.get('site', 'UNKNOWN')}",
-                              f"  Interface .......... {evidence.get('interface', 'UNKNOWN')}",
-                              f"  WDS reply .......... {evidence.get('wds', 'UNKNOWN')}",
-                              f"  boot.var ........... {evidence.get('boot_var', 'UNKNOWN')}",
-                              f"  Media identity ..... {evidence.get('media_identity', 'UNKNOWN')}",
-                              f"  Assignment .......... {evidence.get('assignment', 'UNKNOWN')}",
-                              f"  Policies ........... {evidence.get('policies', 0)}",
-                              f"  Unique secrets ..... {evidence.get('unique_secrets', 1)}",
-                              f"  Status ............. {status}", "",
-                              "  Recovered credential",
-                              f"    Type ............. {evidence.get('type', 'other')}",
-                              f"    Name ............. {evidence.get('name', '')}"])
-                if evidence.get("username"):
-                    lines.append(f"    Username ......... {evidence['username']}")
-                lines.append(f"    Password ......... {evidence.get('value', '')}")
-                if evidence.get("source_policy"):
-                    lines.append(f"    Source ........... {evidence['source_policy']}")
-            elif status:
-                lines.append(f"  Status ........... {status}")
+                lines.append("    Affected objects")
+                lines.extend(f"      {value}" for value in objects)
+            lines.extend(_finding_detail_lines(item, indent="    ", width=width,
+                                               status_override=status))
             lines.append("")
     return lines
 
@@ -426,21 +510,11 @@ def _results_text(root, target, external_results, inventory, cas, templates, all
         lines.extend(["", "Authenticated Access", *access_lines])
     if cred1:
         lines.extend(["", "SCCM CRED-1 PXE"])
-        for item in cred1 if isinstance(cred1, list) else [cred1]:
-            lines.extend([f"  DP ................ {item.get('dp', 'unknown')}",
-                          f"  Site .............. {item.get('site_code', 'UNKNOWN')}",
-                          f"  Interface ......... {item.get('interface', 'UNKNOWN')}",
-                          f"  WDS reply ......... {item.get('wds', 'UNKNOWN')}",
-                          f"  boot.var .......... {item.get('boot_var', 'UNKNOWN')}",
-                          f"  Media identity .... {item.get('media_identity', 'UNKNOWN')}",
-                          f"  Assignment ......... {item.get('assignment', 'UNKNOWN')}",
-                          f"  Policies ........... {item.get('policies', 0)}",
-                          f"  Unique secrets ..... {len(item.get('credentials', []) or [])}",
-                          f"  PXE ............... {item.get('pxe', 'UNKNOWN')}",
-                          f"  TFTP .............. {item.get('tftp', 'UNKNOWN')}",
-                          f"  Boot metadata ..... {item.get('boot_file') or 'UNKNOWN'}",
-                          f"  Media protection .. {item.get('media_protection', 'UNKNOWN')}",
-                          f"  Secret inspection . {item.get('secret_inspection', 'NOT ATTEMPTED')}", ""])
+        cred1_items = cred1 if isinstance(cred1, list) else [cred1]
+        for index, item in enumerate(cred1_items):
+            if index:
+                lines.append("")
+            lines.extend(_cred1_summary_lines(item, indent="  "))
     lines.extend(["", "Findings"])
     finding_lines = _finding_lines(all_findings)
     lines.extend(finding_lines or ["  None"])
@@ -1583,29 +1657,12 @@ def main():
     if cred1_output:
         console.line()
         console.heading("SCCM CRED-1 PXE")
-        for item in cred1_output if isinstance(cred1_output, list) else [cred1_output]:
-            console.line(f"  DP ................ {item.get('dp', 'unknown')}")
-            console.line(f"  Site .............. {item.get('site_code', 'UNKNOWN')}")
-            console.line(f"  Interface ......... {item.get('interface', 'UNKNOWN')}")
-            console.line(f"  WDS reply ......... {item.get('wds', 'UNKNOWN')}")
-            console.line(f"  boot.var .......... {item.get('boot_var', 'UNKNOWN')}")
-            console.line(f"  Media identity .... {item.get('media_identity', 'UNKNOWN')}")
-            console.line(f"  Assignment ......... {item.get('assignment', 'UNKNOWN')}")
-            console.line(f"  Policies ........... {item.get('policies', 0)}")
-            console.line(f"  Unique secrets ..... {len(item.get('credentials', []) or [])}")
-            console.line(f"  PXE ............... {item.get('pxe', 'UNKNOWN')}")
-            console.line(f"  TFTP .............. {item.get('tftp', 'UNKNOWN')}")
-            console.line(f"  Boot metadata ..... {item.get('boot_file') or 'UNKNOWN'}")
-            console.line(f"  Media protection .. {item.get('media_protection', 'UNKNOWN')}")
-            console.line(f"  Secret inspection . {item.get('secret_inspection', 'NOT ATTEMPTED')}")
-            if item.get("credentials"):
-                console.line(f"  Unique secrets .... {len(item['credentials'])}")
-                for secret in item["credentials"]:
-                    console.line(f"    Type ............ {secret.get('type', 'other')}")
-                    console.line(f"    Name ............ {secret.get('name', '')}")
-                    if secret.get("username"):
-                        console.line(f"    Username ........ {secret['username']}")
-                    console.line(f"    Password ........ {secret.get('value', '')}")
+        cred1_items = cred1_output if isinstance(cred1_output, list) else [cred1_output]
+        for index, item in enumerate(cred1_items):
+            if index:
+                console.line()
+            for line in _cred1_summary_lines(item, indent="  "):
+                console.line(line)
     console.line()
     console.heading("Findings")
     if not all_findings:
@@ -1636,31 +1693,47 @@ def main():
                 console.status(f"  {title}", display_status)
                 objects = _affected_object_values(item, limit=10)
                 if objects:
-                    console.line("    Affected objects ..")
+                    console.line("    Affected objects")
                     for value in objects:
                         console.line(f"      {value}")
                 if item["rule"] == "ESC1":
-                    console.line(f"    Status ........... {display_status.upper()}")
+                    fields = [("Status", display_status.upper())]
                     if item.get("status") in {"disagreement", "live-confirmed disagreement"}:
-                        console.line("    Note ............. Certipy did not classify this template as ESC1")
+                        fields.append(("Note", "Certipy did not classify this template as ESC1"))
+                    for line in _compact_field_lines(fields, indent="    "):
+                        console.line(line)
                 elif item["rule"] == "Kerberoastable-account":
-                    console.line(f"    State ............ {'enabled' if evidence.get('enabled') else 'disabled'}")
-                    console.line(f"    SPNs ............. {len(evidence.get('spns', []))}")
-                    console.line(f"    Status ........... {item.get('status', '').upper()}")
+                    for line in _compact_field_lines([
+                            ("State", "enabled" if evidence.get("enabled") else "disabled"),
+                            ("SPNs", len(evidence.get("spns", []))),
+                            ("Status", item.get("status", "").upper()),
+                    ], indent="    "):
+                        console.line(line)
                 elif item.get("category") == "ACL":
-                    console.line(f"    Principal ........ {evidence.get('principal_sid', 'unknown')}")
-                    console.line(f"    Rights ........... {evidence.get('effective_rights', '')}")
-                    console.line("    Impact ........... Low-privileged principal can alter or control this object")
+                    for line in _compact_field_lines([
+                            ("Principal", evidence.get("principal_sid", "unknown")),
+                            ("Rights", evidence.get("effective_rights", "")),
+                            ("Impact", "Low-privileged principal can alter or control this object"),
+                    ], indent="    "):
+                        console.line(line)
                 elif item.get("category") == "DELEGATION" and item.get("rule") == "rbcd":
-                    console.line(f"    Allowed principal  {evidence.get('principal_name') or evidence.get('principal_sid', 'unknown')}")
-                    console.line(f"    Impact ........... {evidence.get('impact', 'May impersonate users to Kerberos services on the target')}")
+                    for line in _compact_field_lines([
+                            ("Allowed principal", evidence.get("principal_name") or evidence.get("principal_sid", "unknown")),
+                            ("Impact", evidence.get("impact", "May impersonate users to Kerberos services on the target")),
+                    ], indent="    "):
+                        console.line(line)
                 elif item.get("rule", "").startswith("gpo-"):
-                    if evidence.get("file"): console.line(f"    File ............. {evidence['file']}")
-                    if evidence.get("account"): console.line(f"    Account .......... {evidence['account']}")
-                    if evidence.get("type"): console.line(f"    Type ............. {evidence['type']}")
-                    if evidence.get("value"): console.line(f"    {'cpassword' if item.get('rule') == 'gpp-cpassword' else 'Value'} ............ {evidence['value']}")
+                    fields = []
+                    if evidence.get("file"): fields.append(("File", evidence["file"]))
+                    if evidence.get("account"): fields.append(("Account", evidence["account"]))
+                    if evidence.get("type"): fields.append(("Type", evidence["type"]))
+                    if evidence.get("value"):
+                        fields.append(("cpassword" if item.get("rule") == "gpp-cpassword" else "Value", evidence["value"]))
+                    for line in _compact_field_lines(fields, indent="    "):
+                        console.line(line)
                 elif item.get("status") not in {"single-source", "corroborated"}:
-                    console.line(f"    Status ........... {item.get('status', '').upper()}")
+                    for line in _compact_field_lines([("Status", item.get("status", "").upper())], indent="    "):
+                        console.line(line)
     console.line()
     console.heading("Workspace")
     console.line(console.paint(f"  {workspace.domain}/", "dim"))
