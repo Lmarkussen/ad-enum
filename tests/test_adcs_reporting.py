@@ -60,10 +60,10 @@ def test_real_certipy_text_evidence_reaches_esc7_renderer_and_filters_acl_princi
     }
     output = "\n".join(_finding_lines([finding]))
 
-    assert "CA                   Example-CA" in output
-    assert "CA DNS               ca1.example.test" in output
-    assert r"Effective principal  EXAMPLE\Administrators" in output
-    assert "Rights               ManageCA, ManageCertificates" in output
+    assert "CA                         Example-CA" in output
+    assert "CA DNS                     ca1.example.test" in output
+    assert r"Effective principal        EXAMPLE\Administrators" in output
+    assert "Rights                     ManageCA, ManageCertificates" in output
     assert "EXAMPLE\\Domain Admins" not in output
     assert "EXAMPLE\\Enterprise Admins" not in output
     assert "Enroll" not in output
@@ -82,7 +82,7 @@ def test_real_certipy_template_failure_drives_accurate_esc1_note():
     }
     output = "\n".join(_finding_lines([finding]))
 
-    assert "Note      Certipy could not enumerate certificate templates" in output
+    assert "Note                       Certipy could not enumerate certificate templates" in output
     assert "did not classify this template" not in output
 
 
@@ -115,14 +115,14 @@ def test_esc1_rendering_surfaces_native_context_and_certipy_limitation():
     }
     output = "\n".join(_finding_lines([finding]))
 
-    assert "CA                    Example-CA" in output
-    assert "CA DNS                ca1.example.test" in output
-    assert "Template              Example-ESC1-Template" in output
+    assert "CA                         Example-CA" in output
+    assert "CA DNS                     ca1.example.test" in output
+    assert "Template                   Example-ESC1-Template" in output
     assert "Enrollee supplies subject  ENABLED" in output
-    assert "Client authentication  ENABLED" in output
-    assert "Low-priv enroll       YES" in output
-    assert "Source                Native AD-Enum" in output
-    assert "Certipy could not enumerate certificate templates" in output
+    assert "Client authentication      ENABLED" in output
+    assert "Low-priv enroll            YES" in output
+    assert "Source                     Native AD-Enum" in output
+    assert "Note                       Certipy could not enumerate certificate templates" in output
     assert "Certipy did not classify this template as ESC1" not in output
 
 
@@ -162,13 +162,33 @@ def test_esc7_rendering_uses_effective_principal_and_matching_rights():
     }
     output = "\n".join(_finding_lines([finding]))
 
-    assert "CA                   Example-CA" in output
-    assert "CA DNS               ca1.example.test" in output
-    assert "Effective principal  EXAMPLE\\Operators" in output
-    assert "Rights               ManageCA, ManageCertificates" in output
-    assert "Status               SINGLE-SOURCE" in output
-    assert "Source               Certipy" in output
+    assert "CA                         Example-CA" in output
+    assert "CA DNS                     ca1.example.test" in output
+    assert "Effective principal        EXAMPLE\\Operators" in output
+    assert "Rights                     ManageCA, ManageCertificates" in output
+    assert "Status                     SINGLE-SOURCE" in output
+    assert "Source                     Certipy" in output
     assert "EXAMPLE\\Domain Admins" not in output
+
+
+def test_adcs_findings_share_one_value_column_for_long_and_short_labels():
+    findings = [
+        {"category": "ADCS", "rule": "ESC1", "title": "ESC1 — Example-Template",
+         "status": "confirmed", "sources": [{"source": "ldap-native"}],
+         "evidence": {"ca_name": "Example-CA", "ca_dns": "ca1.example.test",
+                      "template": "Example-Template", "enrollee_supplies_subject": True}},
+        {"category": "ADCS", "rule": "ESC7", "title": "ESC7 — Example-CA",
+         "status": "single-source", "sources": [{"source": "certipy"}],
+         "evidence": {"certipy": {"CA Name": "Example-CA-7", "DNS Name": "ca7.example.test",
+                                    "User ACL Principals": [r"EXAMPLE\Operators"]}}},
+    ]
+    output = "\n".join(_finding_lines(findings))
+    rows = [line for line in output.splitlines()
+            if any(line.lstrip().startswith(label) for label in ("CA", "CA DNS", "Template"))]
+
+    assert len({line.index(value) for line, value in zip(rows, [
+        "Example-CA", "ca1.example.test", "Example-Template",
+        "Example-CA-7", "ca7.example.test"])}) == 1
 
 
 def test_adcs_details_are_present_in_results_txt_without_changing_findings(tmp_path):

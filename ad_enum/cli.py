@@ -47,12 +47,14 @@ CATEGORY_ORDER = ("ADCS", "POLICY", "KERBEROS", "ACCOUNT", "DELEGATION",
 
 
 def _compact_field_lines(fields, *, indent="  ", width=None, max_label_width=20,
-                         value_style=None, highlight_labels=()):
+                         label_width=None, value_style=None, highlight_labels=()):
     """Render aligned field/value rows with wrapped value continuations."""
     fields = [(str(label), "" if value is None else str(value)) for label, value in fields]
     if not fields:
         return []
-    label_width = min(max(len(label) for label, _ in fields), max_label_width)
+    natural_label_width = max(len(label) for label, _ in fields)
+    label_width = (max(label_width, natural_label_width) if label_width is not None
+                   else min(natural_label_width, max_label_width))
     terminal_width = width or shutil.get_terminal_size((100, 24)).columns
     prefix_width = len(indent) + label_width + 2
     value_width = max(12, terminal_width - prefix_width)
@@ -180,7 +182,10 @@ def _adcs_detail_lines(item, *, indent="    ", width=None, status=""):
             fields.append(("Note", "Certipy template enumeration was unavailable in this run"))
         elif evidence.get("certipy_template_evaluated") and evidence.get("certipy_esc1") is False:
             fields.append(("Note", "Certipy did not classify this template as ESC1"))
-        return _compact_field_lines(fields, indent=indent, width=width)
+        if not fields:
+            return []
+        return _compact_field_lines(fields, indent=indent, width=width,
+                                    label_width=max(25, max(len(label) for label, _ in fields)))
     if item.get("rule") == "ESC7":
         payload = evidence.get("certipy", {}) or {}
         if not isinstance(payload, dict):
@@ -200,12 +205,143 @@ def _adcs_detail_lines(item, *, indent="    ", width=None, status=""):
         source = _adcs_source_text(item)
         if source:
             fields.append(("Source", source))
-        return _compact_field_lines(fields, indent=indent, width=width)
+        if not fields:
+            return []
+        return _compact_field_lines(fields, indent=indent, width=width,
+                                    label_width=max(25, max(len(label) for label, _ in fields)))
     return []
 
 
+_ACL_RIGHT_ORDER = {
+    "resetpassword": 0,
+    "genericall": 1,
+    "writedacl": 2,
+    "writeowner": 3,
+    "modifygroupmembership": 4,
+    "writeserviceprincipalname": 5,
+    "writeproperty": 6,
+    "genericwrite": 7,
+    "allextendedrights": 8,
+}
+_ACL_RIGHT_MEANINGS = {
+    "ResetPassword": "ACCOUNT TAKEOVER",
+    "GenericAll": "FULL CONTROL",
+    "WriteDacl": "PERMISSION TAKEOVER",
+    "WriteOwner": "OWNERSHIP TAKEOVER",
+    "ModifyGroupMembership": "DIRECT CONTROL",
+    "WriteServicePrincipalName": "KERBEROS CONTROL",
+    "WriteProperty": "ATTRIBUTE CONTROL",
+    "GenericWrite": "BROAD WRITE CONTROL",
+    "AllExtendedRights": "EXTENDED CONTROL",
+}
+_ACL_DIRECT_RIGHTS = {"ResetPassword", "GenericAll", "WriteDacl", "WriteOwner",
+                      "ModifyGroupMembership"}
+
+
+def _inventory_attribute(record, *names):
+    attributes = getattr(record, "attributes", {}) or {}
+    lowered = {str(key).casefold(): value for key, value in attributes.items()}
+    for name in names:
+        value = lowered.get(name.casefold())
+        if isinstance(value, list):
+            value = value[0] if value else ""
+        if value not in (None, ""):
+            return str(value)
+    return ""
+
+
+def _inventory_records(inventory):
+    if inventory is None:
+        return []
+    return [record for records in getattr(inventory, "records", {}).values()
+            for record in records.values()]
+
+
+def _acl_principal_name(sid, evidence, inventory):
+    explicit = evidence.get("principal_name")
+    if explicit not in (None, ""):
+        return str(explicit)
+    sid_text = str(sid or "unknown")
+    for record in _inventory_records(inventory):
+        if str(getattr(record, "identifier", "")).casefold() != sid_text.casefold():
+            continue
+        name = _inventory_attribute(record, "sAMAccountName", "name", "cn")
+        if not name:
+            break
+        domain = _inventory_attribute(record, "domain", "netbios_domain", "netbiosDomain")
+        return f"{domain}\\{name}" if domain and "\\" not in name else name
+    return sid_text
+
+
+def _acl_target_kind(item, inventory):
+    evidence = item.get("evidence", {}) or {}
+    object_class = evidence.get("object_class") or evidence.get("objectClass") or []
+    classes = {str(value).casefold() for value in
+               (object_class if isinstance(object_class, (list, tuple, set)) else [object_class])}
+    if "group" in classes:
+        return "group"
+    if classes & {"user", "computer", "msds-groupmanagedserviceaccount"}:
+        return "account"
+    target = str(item.get("affected_object", "")).casefold()
+    for record in _inventory_records(inventory):
+        names = {str(getattr(record, "identifier", "")).casefold()}
+        for key in ("sAMAccountName", "name", "cn", "distinguishedName"):
+            value = _inventory_attribute(record, key)
+            if value:
+                names.add(value.casefold())
+        if target not in names:
+            continue
+        kind = str(getattr(record, "kind", "")).casefold()
+        if kind == "groups":
+            return "group"
+        if kind in {"users", "computers", "gmsa"}:
+            return "account"
+    return "unknown"
+
+
+def _acl_title(item, inventory=None):
+    prefix = "Group control" if _acl_target_kind(item, inventory) == "group" else "Account control"
+    return f"{prefix} — {item.get('affected_object', item.get('title', ''))}"
+
+
+def _acl_right_values(value):
+    values = value if isinstance(value, (list, tuple, set, frozenset)) else str(value or "").split(",")
+    result = list(dict.fromkeys(str(right).strip() for right in values if str(right).strip()))
+    return sorted(result, key=lambda right: (_ACL_RIGHT_ORDER.get(right.casefold(), 99), right.casefold()))
+
+
+def _acl_detail_lines(item, *, indent="    ", width=None, inventory=None, direct_style=None):
+    evidence = item.get("evidence", {}) or {}
+    sid = evidence.get("principal_sid", "unknown")
+    principal = _acl_principal_name(sid, evidence, inventory)
+    lines = _compact_field_lines([
+        ("Principal", principal),
+        ("Principal SID", sid),
+    ], indent=indent, width=width, label_width=18)
+    rights = _acl_right_values(evidence.get("effective_rights", ""))
+    if rights:
+        lines.extend(["", f"{indent}Rights"])
+        right_width = max(25, max(len(right) for right in rights))
+        for right in rights:
+            meaning = _ACL_RIGHT_MEANINGS.get(right, "")
+            direct = right in _ACL_DIRECT_RIGHTS
+            right_text = direct_style(right) if direct_style and direct else right
+            meaning_text = direct_style(meaning) if direct_style and direct and meaning else meaning
+            padding = " " * (right_width - len(right))
+            suffix = f"  {meaning_text}" if meaning else ""
+            lines.append(f"{indent}  {right_text}{padding}{suffix}")
+    target_kind = _acl_target_kind(item, inventory)
+    impact = ("Can modify target group membership" if target_kind == "group" else
+              "Effective control of target account is possible" if target_kind == "account" else
+              "Low-privileged principal can alter or control this object")
+    lines.extend([""])
+    lines.extend(_compact_field_lines([("Impact", impact)], indent=indent, width=width,
+                                      label_width=18))
+    return lines
+
+
 def _finding_detail_lines(item, *, indent="    ", width=None, status_override=None,
-                          secret_style=None):
+                          secret_style=None, inventory=None, direct_style=None):
     """Render detailed finding fields while preserving existing semantics."""
     status = status_override if status_override is not None else item.get("status", "").upper()
     evidence = item.get("evidence", {}) or {}
@@ -225,11 +361,8 @@ def _finding_detail_lines(item, *, indent="    ", width=None, status_override=No
                 fields.append((label, evidence[key]))
         return _compact_field_lines(fields, indent=indent, width=width)
     if item.get("category") == "ACL":
-        return _compact_field_lines([
-            ("Principal", evidence.get("principal_sid", "unknown")),
-            ("Rights", evidence.get("effective_rights", "")),
-            ("Impact", "Low-privileged principal can alter or control this object"),
-        ], indent=indent, width=width)
+        return _acl_detail_lines(item, indent=indent, width=width, inventory=inventory,
+                                 direct_style=direct_style)
     if item.get("category") == "DELEGATION" and item.get("rule") == "rbcd":
         return _compact_field_lines([
             ("Allowed principal", evidence.get("principal_name") or evidence.get("principal_sid", "unknown")),
@@ -279,7 +412,7 @@ def _finding_detail_lines(item, *, indent="    ", width=None, status_override=No
     return _compact_field_lines([("Status", status)], indent=indent, width=width) if status else []
 
 
-def _finding_lines(findings, *, width=None):
+def _finding_lines(findings, *, width=None, inventory=None, direct_style=None):
     """Render normalized findings without terminal decoration.
 
     This is deliberately also suitable for results.txt: it contains the
@@ -308,14 +441,15 @@ def _finding_lines(findings, *, width=None):
                 status = "CONFIRMED"
             title = item.get("title", "")
             if category == "ACL":
-                title = f"Account control — {item.get('affected_object', title)}"
+                title = _acl_title(item, inventory)
             lines.append(f"  {title}")
             objects = _affected_object_values(item)
             if objects:
                 lines.append("    Affected objects")
                 lines.extend(f"      {value}" for value in objects)
             lines.extend(_finding_detail_lines(item, indent="    ", width=width,
-                                               status_override=status))
+                                               status_override=status, inventory=inventory,
+                                               direct_style=direct_style))
             lines.append("")
     return lines
 
@@ -630,7 +764,7 @@ def _results_text(root, target, external_results, inventory, cas, templates, all
                 lines.append("")
             lines.extend(_cred1_summary_lines(item, indent="  "))
     lines.extend(["", "Findings"])
-    finding_lines = _finding_lines(all_findings)
+    finding_lines = _finding_lines(all_findings, inventory=inventory)
     lines.extend(finding_lines or ["  None"])
     lines.extend(["", "Workspace", f"  {workspace.domain}/", ""])
     return "\n".join(lines)
@@ -1830,7 +1964,7 @@ def main():
                 title = item["title"]
                 evidence = item.get("evidence", {})
                 if item.get("category") == "ACL":
-                    title = f"Account control — {item.get('affected_object', title)}"
+                    title = _acl_title(item, inventory)
                 console.status(f"  {title}", display_status)
                 objects = _affected_object_values(item, limit=10)
                 if objects:
@@ -1848,11 +1982,8 @@ def main():
                     ], indent="    "):
                         console.line(line)
                 elif item.get("category") == "ACL":
-                    for line in _compact_field_lines([
-                            ("Principal", evidence.get("principal_sid", "unknown")),
-                            ("Rights", evidence.get("effective_rights", "")),
-                            ("Impact", "Low-privileged principal can alter or control this object"),
-                    ], indent="    "):
+                    for line in _acl_detail_lines(item, indent="    ", inventory=inventory,
+                                                  direct_style=console.highlight_control):
                         console.line(line)
                 elif item.get("category") == "DELEGATION" and item.get("rule") == "rbcd":
                     for line in _compact_field_lines([

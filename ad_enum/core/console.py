@@ -27,6 +27,10 @@ class Console:
         """Highlight explicit administrative-access evidence, when interactive."""
         return self.paint(text, "orange")
 
+    def highlight_control(self, text):
+        """Highlight an explicit direct-control ACL primitive, when interactive."""
+        return self.paint(text, "orange")
+
     def line(self, text=""):
         print(text, file=self.stream, flush=True)
 

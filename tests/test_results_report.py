@@ -1,8 +1,8 @@
 import copy
 import json
 
-from ad_enum.cli import (_access_summary_lines, _compact_field_lines, _cred1_summary_lines,
-                         _finding_detail_lines, _finding_lines, _results_text,
+from ad_enum.cli import (_access_summary_lines, _acl_detail_lines, _compact_field_lines,
+                         _cred1_summary_lines, _finding_detail_lines, _finding_lines, _results_text,
                          _service_summary_lines, _smb_share_access_lines)
 from ad_enum.core.console import Console
 from ad_enum.core.workspace import ScanWorkspace
@@ -145,6 +145,7 @@ def test_orange_highlighting_is_clean_for_non_tty_and_no_color():
     for console in (Console(stream=StringIO()), Console(stream=TTY(), no_color=True)):
         assert console.highlight_secret("ExampleRecoveredSecret") == "ExampleRecoveredSecret"
         assert console.highlight_admin("[ADMIN]") == "[ADMIN]"
+        assert console.highlight_control("ResetPassword") == "ResetPassword"
 
 
 def test_orange_highlights_only_explicit_admin_marker():
@@ -447,14 +448,88 @@ def test_finding_details_use_aligned_rows_and_wrap_long_values():
     assert "------------[ KERBEROS ]------------" in output
     assert "------------[ GPO ]------------" in output
     assert "------------[ ACL ]------------" in output
-    assert "Status  CONFIRMED" in output
-    assert "Note    Certipy did not classify this template as ESC1" in output
+    assert "Status                     CONFIRMED" in output
+    assert "Note                       Certipy did not classify this template as" in output
     assert "...." not in output
-    assert "WriteServicePrincipalName," in output
-    assert "               WriteDacl, WriteOwner" in output
+    assert "WriteServicePrincipalName  KERBEROS CONTROL" in output
+    assert "WriteDacl                  PERMISSION TAKEOVER" in output
+    assert "WriteOwner                 OWNERSHIP TAKEOVER" in output
     assert r"\\example.test\Policies\{123}\Machine\Scripts\Startup\examp" in output
     assert "le.cmd" in output
     assert findings == original
+
+
+def _acl_inventory():
+    inventory = DomainInventory()
+    inventory.add("groups", "S-1-5-21-group", {
+        "sAMAccountName": "Example-Priv-Group", "objectClass": ["group"]})
+    inventory.add("users", "S-1-5-21-user", {
+        "sAMAccountName": "some-principal", "domain": "EXAMPLE",
+        "objectClass": ["user"]})
+    return inventory
+
+
+def test_acl_renderer_resolves_principal_and_distinguishes_group_and_account():
+    inventory = _acl_inventory()
+    findings = [
+        {"category": "ACL", "rule": "high-value-right", "title": "ignored",
+         "affected_object": "Example-Priv-Group", "evidence": {
+             "principal_sid": "S-1-5-21-user", "effective_rights": "WriteProperty, ModifyGroupMembership"}},
+        {"category": "ACL", "rule": "high-value-right", "title": "ignored",
+         "affected_object": "example-user", "evidence": {
+             "principal_sid": "S-1-5-21-user", "effective_rights": "ResetPassword"}},
+    ]
+    inventory.add("users", "S-1-5-21-account", {
+        "sAMAccountName": "example-user", "objectClass": ["user"]})
+
+    output = "\n".join(_finding_lines(findings, inventory=inventory))
+
+    assert "Group control — Example-Priv-Group" in output
+    assert "Account control — example-user" in output
+    assert "Principal           EXAMPLE\\some-principal" in output
+    assert "Principal SID       S-1-5-21-user" in output
+    assert "ModifyGroupMembership      DIRECT CONTROL" in output
+    assert "WriteProperty              ATTRIBUTE CONTROL" in output
+    assert "Impact              Can modify target group membership" in output
+    assert "Impact              Effective control of target account is possible" in output
+
+
+def test_acl_renderer_orders_rights_and_colors_only_direct_control_primitives():
+    finding = {"category": "ACL", "rule": "high-value-right", "title": "ignored",
+               "affected_object": "example-user", "evidence": {
+                   "principal_sid": "S-1-5-21-unresolved",
+                   "effective_rights": "WriteProperty, GenericWrite, AllExtendedRights, "
+                                       "ModifyGroupMembership, WriteOwner, WriteDacl, GenericAll, ResetPassword"}}
+    console = Console(stream=TTY())
+    lines = _acl_detail_lines(finding, direct_style=console.highlight_control)
+    output = "\n".join(lines)
+    ordered = ["ResetPassword", "GenericAll", "WriteDacl", "WriteOwner",
+               "ModifyGroupMembership", "WriteProperty", "GenericWrite", "AllExtendedRights"]
+    positions = [output.index(right) for right in ordered]
+
+    assert positions == sorted(positions)
+    for right in ("ResetPassword", "GenericAll", "WriteDacl", "WriteOwner", "ModifyGroupMembership"):
+        assert f"\033[38;5;208m{right}\033[0m" in output
+    for right in ("WriteProperty", "WriteServicePrincipalName", "GenericWrite", "AllExtendedRights"):
+        assert f"\033[38;5;208m{right}\033[0m" not in output
+    assert "WriteProperty              ATTRIBUTE CONTROL" in output
+    assert "GenericWrite               BROAD WRITE CONTROL" in output
+    assert "AllExtendedRights          EXTENDED CONTROL" in output
+
+
+def test_acl_renderer_keeps_unresolved_sid_and_results_plain_text(tmp_path):
+    finding = {"category": "ACL", "rule": "high-value-right", "title": "ignored",
+               "affected_object": "unknown-target", "evidence": {
+                   "principal_sid": "S-1-5-21-unknown", "effective_rights": "WriteDacl"}}
+    original = copy.deepcopy(finding)
+    report = _results_text("example.test", "dc1.example.test", {}, DomainInventory(), [], [],
+                           [finding], ScanWorkspace(tmp_path, "example.test"))
+
+    assert "Principal           S-1-5-21-unknown" in report
+    assert "Principal SID       S-1-5-21-unknown" in report
+    assert "WriteDacl                  PERMISSION TAKEOVER" in report
+    assert "\033[" not in report
+    assert finding == original
 
 
 def test_simple_findings_remain_compact_and_category_banners_are_preserved():
