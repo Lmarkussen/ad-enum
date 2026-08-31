@@ -35,6 +35,38 @@ def test_results_report_contains_consolidated_group_and_target_secret(tmp_path):
     assert "\x1b[" not in report
 
 
+def test_password_policy_uses_display_label_without_changing_category_or_value():
+    finding = {"category": "POLICY", "rule": "minimum-password-length",
+               "title": "Minimum password length is 5", "affected_object": "example.test",
+               "status": "single-source", "evidence": {
+                   "canonical": {"minimum_password_length": 5}}}
+    original = copy.deepcopy(finding)
+
+    output = "\n".join(_finding_lines([finding]))
+
+    assert "------------[ PASSWORD POLICY ]------------" in output
+    assert "Minimum password length — 5" in output
+    assert "Minimum password length is 5" not in output
+    assert finding == original
+
+
+def test_ldap_finding_prefers_known_canonical_host_and_keeps_ip():
+    identities = {"records": [{"fqdn": "dc1.example.test", "short_name": "DC1",
+                                "ip_addresses": ["192.0.2.10"]}]}
+    finding = {"category": "LDAP", "rule": "ldap-signing-not-required",
+               "title": "LDAP signing not required — 192.0.2.10",
+               "affected_object": "192.0.2.10", "status": "single-source",
+               "evidence": {"state": "NOT REQUIRED",
+                            "impact": "LDAP signing enforcement is not required"}}
+
+    output = "\n".join(_finding_lines([finding], host_identities=identities))
+
+    assert "LDAP signing not required — dc1.example.test" in output
+    assert "Target              192.0.2.10" in output
+    assert "Impact              LDAP signing enforcement is not required" in output
+    assert finding["affected_object"] == "192.0.2.10"
+
+
 def test_results_report_shows_normalized_smb_share_access(tmp_path):
     report = _results_text("SCCM.LAB", "dc.sccm.lab", {}, DomainInventory(), [], [], [],
                            ScanWorkspace(tmp_path, "sccm.lab"), smb_shares=[
@@ -48,6 +80,87 @@ def test_results_report_shows_normalized_smb_share_access(tmp_path):
     assert "FILE01\\Deploy$" in report and "READ / WRITE" in report
     assert "FILE01\\Finance" in report and "DENIED" in report
     assert "FILE01\\Unknown" in report and "UNKNOWN" in report
+
+
+def test_smb_findings_are_grouped_without_losing_hosts_or_access_state():
+    findings = [
+        {"category": "SMB", "rule": "signing-not-required",
+         "title": "SMB signing not required — 3 host(s)", "status": "single-source",
+         "evidence": {"hosts": [{"host": "MECM"}, {"host": "CLIENT"}, {"host": "MSSQL"}]}},
+        {"category": "SMB", "rule": "writable-share", "title": "Writable SMB share — MECM\\share_iso",
+         "status": "single-source", "evidence": {"share": {
+             "host": "MECM", "share": "share_iso", "readable": True, "writable": True}}},
+        {"category": "SMB", "rule": "writable-share", "title": "Writable SMB share — DC\\NETLOGON",
+         "status": "single-source", "evidence": {"share": {
+             "host": "DC", "share": "NETLOGON", "readable": True, "writable": True}}},
+    ]
+    original = copy.deepcopy(findings)
+
+    output = "\n".join(_finding_lines(findings))
+
+    assert "SMB signing not required\n    Hosts               3\n    Affected" in output
+    assert output.index("CLIENT") < output.index("MECM") < output.index("MSSQL")
+    assert "Writable SMB shares" in output
+    assert "MECM\\share_iso  READ / WRITE" in output
+    assert "DC\\NETLOGON     READ / WRITE" in output
+    assert "Writable SMB share —" not in output
+    assert findings == original
+
+
+def test_relay_findings_are_grouped_by_protocol_and_signing_candidate():
+    identities = {"records": [
+        {"fqdn": "dc.example.test", "short_name": "DC", "ip_addresses": ["192.0.2.10"]},
+        {"fqdn": "mecm.example.test", "short_name": "MECM", "ip_addresses": ["192.0.2.11"]},
+    ]}
+    findings = [
+        {"category": "RELAY", "rule": "relay-path",
+         "title": "Potential NTLM relay path — MECM (smb)", "status": "single-source",
+         "affected_object": "MECM", "evidence": {"dest_host": "MECM", "dest_protocol": "smb"}},
+        {"category": "RELAY", "rule": "relay-path",
+         "title": "Potential NTLM relay path — DC (ldap)", "status": "single-source",
+         "affected_object": "DC", "evidence": {"dest_host": "DC", "dest_protocol": "ldap"}},
+        {"category": "RELAY", "rule": "relay-path",
+         "title": "Potential NTLM relay path — SQL (mssql)", "status": "single-source",
+         "affected_object": "SQL", "evidence": {"dest_host": "SQL", "dest_protocol": "mssql"}},
+        {"category": "RELAY", "rule": "relay-path",
+         "title": "Potential NTLM relay path — MECM (http)", "status": "single-source",
+         "affected_object": "MECM", "evidence": {"dest_host": "MECM", "dest_protocol": "http"}},
+        {"category": "RELAY", "rule": "SMB-signing-not-required",
+         "title": "SMB signing not required — MECM", "status": "single-source",
+         "evidence": {"host": {"host": "MECM"}}},
+    ]
+    original = copy.deepcopy(findings)
+
+    output = "\n".join(_finding_lines(findings, host_identities=identities))
+
+    assert "Potential NTLM relay paths" in output
+    assert output.index("    HTTP") < output.index("    LDAP") < output.index("    MSSQL") < output.index("    SMB")
+    assert "mecm.example.test" in output
+    assert "SMB relay candidates\n    Signing not required\n      mecm.example.test" in output
+    assert "Potential NTLM relay path —" not in output
+    assert findings == original
+
+
+def test_sccm_finding_summary_omits_repeated_secret_and_keeps_dedicated_section(tmp_path):
+    finding = {"category": "SCCM", "rule": "CRED-1",
+               "title": "CRED-1 — PXE boot media exposes credential material",
+               "affected_object": "192.0.2.41", "status": "confirmed",
+               "evidence": {"dp": "192.0.2.41", "site": "P01", "unique_secrets": 1,
+                            "value": "ExampleRecoveredSecret"}}
+    dedicated = {"dp": "192.0.2.41", "site_code": "P01", "credentials": [{
+        "type": "task_sequence_variable", "name": "ExampleVariable",
+        "value": "ExampleRecoveredSecret"}]}
+    report = _results_text("example.test", "dc1.example.test", {}, DomainInventory(), [], [],
+                           [finding], ScanWorkspace(tmp_path, "example.test"), cred1=dedicated)
+    findings_section = report.split("Findings\n", 1)[1]
+
+    assert "------------[ SCCM ]------------" in findings_section
+    assert "Status              CONFIRMED" in findings_section
+    assert "Distribution Point  192.0.2.41" in findings_section
+    assert "Site                P01" in findings_section
+    assert "Secrets             1" in findings_section
+    assert "ExampleRecoveredSecret" not in findings_section
+    assert report.count("ExampleRecoveredSecret") == 1
 
 
 def test_smb_share_access_is_grouped_and_sorted(tmp_path):
@@ -266,7 +379,7 @@ def test_aggregated_finding_lists_affected_objects(tmp_path):
                                          {"host": "MSSQL.sccm.lab"},
                                          {"ip": "10.1.10.43"}]}}
     report = _report(tmp_path, [finding])
-    assert "Affected objects" in report
+    assert "Affected" in report
     assert "MECM.sccm.lab" in report
     assert "MSSQL.sccm.lab" in report
     assert "10.1.10.43" in report
@@ -391,11 +504,18 @@ def test_results_report_shows_complete_cred1_finding_credential(tmp_path):
                             "type": "task_sequence_variable", "name": "SyntheticName",
                             "value": "ADEnum-CRED1-Test-Secret",
                             "source_policy": "Policy-A"}}
-    report = _report(tmp_path, [finding])
-    assert "Unique secrets" not in report
-    assert "Unique secrets ..... 1" not in report
+    report = _results_text(
+        "SCCM.LAB", "dc.sccm.lab", {}, DomainInventory(), [], [], [finding],
+        ScanWorkspace(tmp_path, "sccm.lab"),
+        cred1={"dp": "10.0.0.41", "site_code": "P01", "credentials": [{
+            "type": "task_sequence_variable", "name": "SyntheticName",
+            "value": "ADEnum-CRED1-Test-Secret"}]},
+    )
+    findings_section = report.split("Findings\n", 1)[1]
+    assert "Unique secrets" not in findings_section
+    assert "Unique secrets ..... 1" not in findings_section
     assert "Recovered credential" in report
-    assert "ADEnum-CRED1-Test-Secret" in report
+    assert report.count("ADEnum-CRED1-Test-Secret") == 1
     assert "SyntheticName" in report
 
 
@@ -639,7 +759,7 @@ def test_simple_findings_remain_compact_and_category_banners_are_preserved():
     ]))
 
     assert "------------[ ACCOUNT ]------------" in output
-    assert "------------[ POLICY ]------------" in output
+    assert "------------[ PASSWORD POLICY ]------------" in output
     assert "Password never expires — example-user\n    Status" not in output
     assert "Password complexity disabled\n    Status" not in output
     assert "...." not in output

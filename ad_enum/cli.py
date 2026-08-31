@@ -304,13 +304,59 @@ def _acl_title(item, inventory=None):
     return f"{prefix} — {item.get('affected_object', item.get('title', ''))}"
 
 
-def _finding_title(item, inventory=None):
+def _canonical_host_display(value, host_identities=None):
+    value = str(value or "unknown").strip().rstrip(".")
+    if not host_identities:
+        return value
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        host_item = {"host": value}
+    else:
+        host_item = {"host": value, "ip": value}
+    _, canonical, host, _ = _host_identity(host_item, _host_identity_index(host_identities))
+    return canonical or host or value
+
+
+def _known_host_ip(value, host_identities=None):
+    value = str(value or "").strip()
+    if not host_identities:
+        try:
+            ipaddress.ip_address(value)
+            return value
+        except ValueError:
+            return ""
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        host_item = {"host": value}
+    else:
+        host_item = {"host": value, "ip": value}
+    key, _, _, ip = _host_identity(host_item, _host_identity_index(host_identities))
+    if ip:
+        return ip
+    if key[0] == "identity":
+        ips = _host_identity_index(host_identities)["identities"].get(key[1], {}).get("ips", set())
+        return sorted(ips)[0] if ips else ""
+    return ""
+
+
+def _finding_title(item, inventory=None, host_identities=None):
     """Return the human-readable finding title without redundant state text."""
     title = item.get("title", "")
     if item.get("rule") in {"AS-REP-roastable", "Kerberoastable-account"}:
         title = re.sub(r"\s+\((?:enabled|disabled)\)$", "", title, flags=re.IGNORECASE)
     if item.get("category") == "ACL":
         return _acl_title(item, inventory)
+    if item.get("category") == "POLICY" and item.get("rule") == "minimum-password-length":
+        value = (item.get("evidence", {}).get("canonical", {}) or {}).get("minimum_password_length")
+        if value not in (None, ""):
+            return f"Minimum password length — {value}"
+        title = re.sub(r"^(Minimum password length) is (.+)$", r"\1 — \2", title)
+    if item.get("category") == "LDAP":
+        affected = item.get("affected_object")
+        if affected not in (None, "") and " — " in title:
+            title = f"{title.rsplit(' — ', 1)[0]} — {_canonical_host_display(affected, host_identities)}"
     return title
 
 
@@ -351,7 +397,8 @@ def _acl_detail_lines(item, *, indent="    ", width=None, inventory=None, direct
 
 
 def _finding_detail_lines(item, *, indent="    ", width=None, status_override=None,
-                          secret_style=None, inventory=None, direct_style=None):
+                          secret_style=None, inventory=None, direct_style=None,
+                          host_identities=None):
     """Render detailed finding fields while preserving existing semantics."""
     status = status_override if status_override is not None else item.get("status", "").upper()
     evidence = item.get("evidence", {}) or {}
@@ -379,6 +426,15 @@ def _finding_detail_lines(item, *, indent="    ", width=None, status_override=No
     if item.get("category") == "ACL":
         return _acl_detail_lines(item, indent=indent, width=width, inventory=inventory,
                                  direct_style=direct_style)
+    if item.get("category") == "LDAP":
+        fields = []
+        target = _known_host_ip(item.get("affected_object"), host_identities)
+        if target:
+            fields.append(("Target", target))
+        if evidence.get("impact"):
+            fields.append(("Impact", evidence["impact"]))
+        if fields:
+            return _compact_field_lines(fields, indent=indent, width=width, label_width=18)
     if item.get("category") == "DELEGATION":
         rule = item.get("rule")
         state = "enabled" if evidence.get("enabled") else "disabled"
@@ -476,43 +532,240 @@ def _finding_detail_lines(item, *, indent="    ", width=None, status_override=No
     return _compact_field_lines([("Status", status)], indent=indent, width=width) if status else []
 
 
-def _finding_lines(findings, *, width=None, inventory=None, direct_style=None):
-    """Render normalized findings without terminal decoration.
+def _finding_category_label(category):
+    return "PASSWORD POLICY" if category == "POLICY" else category
 
-    This is deliberately also suitable for results.txt: it contains the
-    operator-facing evidence, but never progress, subprocess output, or raw
-    diagnostics.
-    """
+
+def _finding_groups(findings):
     grouped = {category: [] for category in CATEGORY_ORDER}
-    for item in findings:
+    for item in findings or []:
         if item.get("rule") == "Kerberoastable-account" and item.get("title", "").endswith("(disabled)"):
             continue
         grouped.setdefault(item.get("category", "OTHER"), []).append(item)
+    return grouped
+
+
+def _styled_finding_heading(title, title_style=None, indent="  "):
+    value = f"{indent}{title}"
+    return title_style(value) if title_style else value
+
+
+def _smb_finding_host_values(item, host_identities):
+    evidence = item.get("evidence", {}) or {}
+    values = evidence.get("hosts") or []
+    if not isinstance(values, list):
+        values = [values]
+    result = []
+    for value in values:
+        if isinstance(value, dict):
+            value = (value.get("fqdn") or value.get("host") or value.get("hostname") or
+                     value.get("name") or value.get("ip"))
+        if value not in (None, ""):
+            result.append(_canonical_host_display(value, host_identities))
+    return list(dict.fromkeys(result))
+
+
+def _smb_finding_share_name(item, host_identities):
+    evidence = item.get("evidence", {}) or {}
+    share = evidence.get("share", {}) or {}
+    if not isinstance(share, dict):
+        share = {}
+    host = share.get("host") or share.get("ip") or item.get("affected_object", "unknown")
+    name = share.get("share") or "unknown"
+    return f"{_canonical_host_display(host, host_identities)}\\{name}"
+
+
+def _smb_finding_lines(items, *, title_style=None, host_identities=None, width=None,
+                       inventory=None, secret_style=None, direct_style=None):
+    signing = [item for item in items if item.get("rule") == "signing-not-required"]
+    writable = [item for item in items if item.get("rule") == "writable-share"]
+    remaining = [item for item in items if item not in signing and item not in writable]
+    lines = []
+    if signing:
+        hosts = []
+        for item in signing:
+            for host in _smb_finding_host_values(item, host_identities):
+                if host.casefold() not in {value.casefold() for value in hosts}:
+                    hosts.append(host)
+        hosts.sort(key=str.casefold)
+        lines.append(_styled_finding_heading("SMB signing not required", title_style))
+        lines.extend(_compact_field_lines([("Hosts", len(hosts))], indent="    ", width=width,
+                                          label_width=18))
+        if hosts:
+            lines.append("    Affected")
+            lines.extend(f"      {host}" for host in hosts)
+    if writable:
+        if lines:
+            lines.append("")
+        lines.append(_styled_finding_heading("Writable SMB shares", title_style))
+        entries = [(_smb_finding_share_name(item, host_identities),
+                    _smb_access_state((item.get("evidence", {}) or {}).get("share", {}) or {}))
+                   for item in writable]
+        entries = sorted(dict.fromkeys(entries), key=lambda value: value[0].casefold())
+        share_width = max((len(name) for name, _ in entries), default=0)
+        lines.extend(f"    {name:<{share_width}}  {state}" for name, state in entries)
+    if remaining:
+        if lines:
+            lines.append("")
+        lines.extend(_finding_item_lines(remaining, width=width, inventory=inventory,
+                                         host_identities=host_identities,
+                                         title_style=title_style, secret_style=secret_style,
+                                         direct_style=direct_style))
+    return lines
+
+
+_RELAY_PROTOCOL_ORDER = {name: index for index, name in enumerate(
+    ("http", "https", "ldap", "ldaps", "mssql", "smb"))}
+
+
+def _relay_host(item, host_identities):
+    evidence = item.get("evidence", {}) or {}
+    host = evidence.get("dest_host") or item.get("affected_object", "unknown")
+    return _canonical_host_display(host, host_identities)
+
+
+def _relay_signing_host(item, host_identities):
+    evidence = item.get("evidence", {}) or {}
+    host_data = evidence.get("host", {}) or {}
+    if isinstance(host_data, dict):
+        host = (host_data.get("fqdn") or host_data.get("host") or host_data.get("hostname") or
+                host_data.get("name") or host_data.get("ip"))
+    else:
+        host = host_data
+    return _canonical_host_display(host or item.get("affected_object", "unknown"), host_identities)
+
+
+def _relay_finding_lines(items, *, title_style=None, host_identities=None, width=None,
+                         inventory=None, secret_style=None, direct_style=None):
+    paths = [item for item in items if item.get("rule") == "relay-path"]
+    signing = [item for item in items if item.get("rule") == "SMB-signing-not-required"]
+    remaining = [item for item in items if item not in paths and item not in signing]
+    lines = []
+    by_protocol = {}
+    for item in paths:
+        protocol = str((item.get("evidence", {}) or {}).get("dest_protocol", "unknown")).casefold()
+        by_protocol.setdefault(protocol, set()).add(_relay_host(item, host_identities))
+    if by_protocol:
+        lines.append(_styled_finding_heading("Potential NTLM relay paths", title_style))
+        for protocol in sorted(by_protocol, key=lambda value: (_RELAY_PROTOCOL_ORDER.get(value, 99), value)):
+            lines.extend(["", f"    {protocol.upper()}"])
+            lines.extend(f"      {host}" for host in sorted(by_protocol[protocol], key=str.casefold))
+    if signing:
+        if lines:
+            lines.append("")
+        lines.append(_styled_finding_heading("SMB relay candidates", title_style))
+        lines.append("    Signing not required")
+        hosts = sorted({_relay_signing_host(item, host_identities) for item in signing}, key=str.casefold)
+        lines.extend(f"      {host}" for host in hosts)
+    if remaining:
+        if lines:
+            lines.append("")
+        lines.extend(_finding_item_lines(remaining, width=width, inventory=inventory,
+                                         host_identities=host_identities,
+                                         title_style=title_style, secret_style=secret_style,
+                                         direct_style=direct_style))
+    return lines
+
+
+def _sccm_finding_lines(items, *, title_style=None, host_identities=None, width=None,
+                        inventory=None, secret_style=None, direct_style=None):
+    cred1 = [item for item in items if item.get("rule") == "CRED-1"]
+    remaining = [item for item in items if item not in cred1]
+    lines = []
+    groups = {}
+    for item in cred1:
+        evidence = item.get("evidence", {}) or {}
+        key = (str(evidence.get("dp") or item.get("affected_object", "unknown")).casefold(),
+               str(evidence.get("site", "")).casefold())
+        groups.setdefault(key, []).append(item)
+    for group_items in sorted(groups.values(), key=lambda values: (
+            str((values[0].get("evidence", {}) or {}).get("dp", "")).casefold(),
+            str((values[0].get("evidence", {}) or {}).get("site", "")).casefold())):
+        if lines:
+            lines.append("")
+        first = group_items[0]
+        evidence = first.get("evidence", {}) or {}
+        lines.append(_styled_finding_heading(_finding_title(first, inventory, host_identities), title_style))
+        statuses = list(dict.fromkeys(str(item.get("status", "")).upper() for item in group_items
+                                      if item.get("status")))
+        fields = [("Status", ", ".join(statuses))] if statuses else []
+        dp = evidence.get("dp") or first.get("affected_object")
+        if dp not in (None, ""):
+            fields.append(("Distribution Point", _canonical_host_display(dp, host_identities)))
+        if evidence.get("site") not in (None, ""):
+            fields.append(("Site", evidence["site"]))
+        counts = [item.get("evidence", {}).get("unique_secrets") for item in group_items
+                  if item.get("evidence", {}).get("unique_secrets") is not None]
+        if counts:
+            fields.append(("Secrets", max(counts)))
+        if fields:
+            lines.extend(_compact_field_lines(fields, indent="    ", width=width, label_width=18))
+    if remaining:
+        if lines:
+            lines.append("")
+        lines.extend(_finding_item_lines(remaining, width=width, inventory=inventory,
+                                         host_identities=host_identities,
+                                         title_style=title_style, secret_style=secret_style,
+                                         direct_style=direct_style))
+    return lines
+
+
+def _finding_item_lines(items, *, width=None, inventory=None, host_identities=None,
+                        title_style=None, secret_style=None, direct_style=None):
+    lines = []
+    for item in items:
+        status = item.get("status", "").upper()
+        if item.get("rule") == "ESC1" and status in {"DISAGREEMENT", "LIVE-CONFIRMED DISAGREEMENT"}:
+            status = "CONFIRMED"
+        lines.append(_styled_finding_heading(_finding_title(item, inventory, host_identities), title_style))
+        objects = _affected_object_values(item)
+        if objects:
+            lines.append("    Affected objects")
+            lines.extend(f"      {value}" for value in objects)
+        lines.extend(_finding_detail_lines(item, indent="    ", width=width,
+                                           status_override=status, inventory=inventory,
+                                           direct_style=direct_style,
+                                           host_identities=host_identities,
+                                           secret_style=secret_style))
+        lines.append("")
+    return lines
+
+
+def _finding_category_lines(category, items, *, width=None, inventory=None,
+                            host_identities=None, title_style=None, secret_style=None,
+                            direct_style=None):
+    if category == "SMB":
+        return _smb_finding_lines(items, title_style=title_style, host_identities=host_identities,
+                                  width=width, inventory=inventory, secret_style=secret_style,
+                                  direct_style=direct_style)
+    if category == "RELAY":
+        return _relay_finding_lines(items, title_style=title_style, host_identities=host_identities,
+                                    width=width, inventory=inventory, secret_style=secret_style,
+                                    direct_style=direct_style)
+    if category == "SCCM":
+        return _sccm_finding_lines(items, title_style=title_style, host_identities=host_identities,
+                                   width=width, inventory=inventory, secret_style=secret_style,
+                                   direct_style=direct_style)
+    return _finding_item_lines(items, width=width, inventory=inventory,
+                               host_identities=host_identities, title_style=title_style,
+                               secret_style=secret_style, direct_style=direct_style)
+
+
+def _finding_lines(findings, *, width=None, inventory=None, direct_style=None,
+                   host_identities=None):
+    """Render normalized findings without terminal decoration."""
+    grouped = _finding_groups(findings)
     lines = []
     for category in CATEGORY_ORDER + tuple(x for x in grouped if x not in CATEGORY_ORDER):
         items = grouped.get(category, [])
         if not items:
             continue
-        # The leading empty line is part of the report contract.  The
-        # previous finding already contributes the trailing empty line, so
-        # do not add another one at category boundaries.
         if not lines or lines[-1] != "":
             lines.append("")
-        lines.append(f"------------[ {category} ]------------")
-        for item in items:
-            status = item.get("status", "").upper()
-            if item.get("rule") == "ESC1" and status in {"DISAGREEMENT", "LIVE-CONFIRMED DISAGREEMENT"}:
-                status = "CONFIRMED"
-            title = _finding_title(item, inventory)
-            lines.append(f"  {title}")
-            objects = _affected_object_values(item)
-            if objects:
-                lines.append("    Affected objects")
-                lines.extend(f"      {value}" for value in objects)
-            lines.extend(_finding_detail_lines(item, indent="    ", width=width,
-                                               status_override=status, inventory=inventory,
-                                               direct_style=direct_style))
-            lines.append("")
+        lines.append(f"------------[ {_finding_category_label(category)} ]------------")
+        lines.extend(_finding_category_lines(category, items, width=width, inventory=inventory,
+                                             host_identities=host_identities,
+                                             direct_style=direct_style))
     return lines
 
 
@@ -826,7 +1079,7 @@ def _results_text(root, target, external_results, inventory, cas, templates, all
                 lines.append("")
             lines.extend(_cred1_summary_lines(item, indent="  "))
     lines.extend(["", "Findings"])
-    finding_lines = _finding_lines(all_findings, inventory=inventory)
+    finding_lines = _finding_lines(all_findings, inventory=inventory, host_identities=host_identities)
     lines.extend(finding_lines or ["  None"])
     lines.extend(["", "Workspace", f"  {workspace.domain}/", ""])
     return "\n".join(lines)
@@ -2005,60 +2258,16 @@ def main():
     if not all_findings:
         console.line("  None")
     else:
-        category_order = ("ADCS", "POLICY", "KERBEROS", "ACCOUNT", "DELEGATION",
-                          "GPO", "ACL", "LAPS", "LDAP", "SMB", "RELAY", "SCCM", "TRUSTS")
-        grouped = {category: [] for category in category_order}
-        for item in all_findings:
-            # Disabled Kerberoastable principals remain in JSON evidence, but
-            # should not look like currently actionable findings in normal UI.
-            if (item.get("rule") == "Kerberoastable-account"
-                    and item.get("title", "").endswith("(disabled)")):
-                continue
-            grouped.setdefault(item.get("category", "OTHER"), []).append(item)
-        for category in category_order + tuple(x for x in grouped if x not in category_order):
+        grouped = _finding_groups(all_findings)
+        for category in CATEGORY_ORDER + tuple(x for x in grouped if x not in CATEGORY_ORDER):
             items = grouped.get(category, [])
             if not items: continue
-            console.category_header(category)
-            for item in items:
-                display_status = item.get("status")
-                if item.get("rule") == "ESC1" and display_status in {"disagreement", "live-confirmed disagreement"}:
-                    display_status = "confirmed"
-                title = _finding_title(item, inventory)
-                evidence = item.get("evidence", {})
-                console.line(console.finding_title(f"  {title}"))
-                objects = _affected_object_values(item, limit=10)
-                if objects:
-                    console.line("    Affected objects")
-                    for value in objects:
-                        console.line(f"      {value}")
-                if item.get("category") == "ADCS" and item.get("rule") in {"ESC1", "ESC7"}:
-                    for line in _adcs_detail_lines(item, indent="    ", status=display_status.upper()):
-                        console.line(line)
-                elif item.get("rule") in {"AS-REP-roastable", "Kerberoastable-account"}:
-                    for line in _finding_detail_lines(item, indent="    "):
-                        console.line(line)
-                elif item.get("category") == "ACL":
-                    for line in _acl_detail_lines(item, indent="    ", inventory=inventory,
-                                                  direct_style=console.highlight_control):
-                        console.line(line)
-                elif item.get("category") == "DELEGATION":
-                    for line in _finding_detail_lines(item, indent="    "):
-                        console.line(line)
-                elif item.get("rule", "").startswith("gpo-"):
-                    fields = []
-                    if evidence.get("file"): fields.append(("File", evidence["file"]))
-                    if evidence.get("account"): fields.append(("Account", evidence["account"]))
-                    if evidence.get("type"): fields.append(("Type", evidence["type"]))
-                    if evidence.get("value"):
-                        fields.append(("cpassword" if item.get("rule") == "gpp-cpassword" else "Value", evidence["value"]))
-                    secret_value = item.get("rule") in {"gpo-cleartext-credential", "gpp-cpassword"}
-                    for line in _compact_field_lines(
-                            fields, indent="    ", value_style=console.highlight_secret if secret_value else None,
-                            highlight_labels={"Value", "cpassword"}):
-                        console.line(line)
-                elif item.get("status") not in {"single-source", "corroborated"}:
-                    for line in _compact_field_lines([("Status", item.get("status", "").upper())], indent="    "):
-                        console.line(line)
+            console.category_header(_finding_category_label(category))
+            for line in _finding_category_lines(
+                    category, items, inventory=inventory, host_identities=dns_map,
+                    title_style=console.finding_title, secret_style=console.highlight_secret,
+                    direct_style=console.highlight_control):
+                console.line(line)
     console.line()
     console.heading("Workspace")
     console.line(console.paint(f"  {workspace.domain}/", "dim"))
