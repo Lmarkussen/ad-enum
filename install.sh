@@ -23,6 +23,41 @@ say() { printf '%s[*]%s %s\n' "$cyan" "$reset" "$1"; }
 ok() { printf '%s[+]%s %s\n' "$green" "$reset" "$1"; }
 warn() { printf '%s[!]%s %s\n' "$yellow" "$reset" "$1"; }
 fail() { printf '%s[-]%s %s\n' "$red" "$reset" "$1" >&2; }
+DISTRO_FAMILY=""
+PACKAGE_MANAGER=""
+PYTHON_BIN=""
+detect_platform() {
+  local distro_id distro_like
+  if [[ ! -r /etc/os-release ]]; then
+    fail "Cannot detect Linux distribution: /etc/os-release is unavailable"
+    exit 1
+  fi
+  # shellcheck disable=SC1091
+  . /etc/os-release
+  distro_id="${ID:-}"
+  distro_like="${ID_LIKE:-}"
+  case " $distro_id $distro_like " in
+    *" debian "*)
+      DISTRO_FAMILY="debian"
+      PACKAGE_MANAGER="apt-get"
+      PYTHON_BIN="python3"
+      ;;
+    *" arch "*)
+      DISTRO_FAMILY="arch"
+      PACKAGE_MANAGER="pacman"
+      PYTHON_BIN="python"
+      ;;
+    *)
+      fail "Unsupported Linux distribution (ID=${distro_id:-unknown}, ID_LIKE=${distro_like:-unknown})"
+      fail "Supported families are Debian/Kali and Arch Linux/derivatives"
+      exit 1
+      ;;
+  esac
+  command -v "$PACKAGE_MANAGER" >/dev/null 2>&1 || {
+    fail "${DISTRO_FAMILY^} package manager '$PACKAGE_MANAGER' is unavailable"
+    exit 1
+  }
+}
 run_logged() {
   local label="$1"; shift; local log
   CURRENT_STAGE="$label"
@@ -44,37 +79,116 @@ nxc_runtime_ok() {
 }
 package_manager_available() {
   local lock holder
-  for lock in /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock; do
+  local locks=()
+  case "$DISTRO_FAMILY" in
+    debian) locks=(/var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock) ;;
+    arch) locks=(/var/lib/pacman/db.lck) ;;
+  esac
+  for lock in "${locks[@]}"; do
     [[ -e "$lock" ]] || continue
     holder="$(sudo fuser "$lock" 2>/dev/null || true)"
     if [[ -n "$holder" ]]; then
       warn "Package manager is busy (lock: $lock; process: $holder)"
-      warn "Wait for the existing apt/dpkg operation to finish, then rerun ./install.sh"
+      if [[ "$DISTRO_FAMILY" == arch ]]; then
+        warn "Wait for the existing pacman operation to finish, then rerun ./install.sh"
+      else
+        warn "Wait for the existing apt/dpkg operation to finish, then rerun ./install.sh"
+      fi
       return 1
     fi
   done
 }
+system_package_name() {
+  local logical_package="$1"
+  case "$DISTRO_FAMILY:$logical_package" in
+    debian:*) printf '%s\n' "$logical_package" ;;
+    arch:python3|arch:python3-dev|arch:python3-venv) printf '%s\n' python ;;
+    arch:libkrb5-dev) printf '%s\n' krb5 ;;
+    arch:golang-go) printf '%s\n' go ;;
+    arch:libpcap-dev) printf '%s\n' libpcap ;;
+    arch:pipx) printf '%s\n' python-pipx ;;
+    arch:netexec) printf '%s\n' netexec ;;
+    arch:krb5-user) printf '%s\n' krb5 ;;
+    *)
+      fail "No package mapping for '$logical_package' on $DISTRO_FAMILY"
+      return 1
+      ;;
+  esac
+}
+package_installed() {
+  local package="$1"
+  case "$DISTRO_FAMILY" in
+    debian)
+      command -v dpkg-query >/dev/null 2>&1 || return 1
+      dpkg-query -W -f='${Status}\n' "$package" 2>/dev/null | grep -q '^install ok installed$'
+      ;;
+    arch)
+      pacman -Q "$package" >/dev/null 2>&1
+      ;;
+  esac
+}
 libpcap_dev_installed() {
-  command -v dpkg-query >/dev/null 2>&1 || return 1
-  dpkg-query -W -f='${Status}\n' libpcap-dev 2>/dev/null | grep -q '^install ok installed$'
+  package_installed "$(system_package_name libpcap-dev)"
+}
+add_system_package() {
+  local logical_package="$1" package existing
+  package="$(system_package_name "$logical_package")"
+  for existing in "${system_packages[@]}"; do
+    [[ "$existing" == "$package" ]] && return 0
+  done
+  system_packages+=("$package")
+}
+install_system_packages() {
+  case "$DISTRO_FAMILY" in
+    debian)
+      package_manager_available || {
+        fail "Cannot safely start package installation while apt/dpkg is busy"
+        exit 1
+      }
+      run_logged "Updating package indexes" timeout 900s sudo apt-get update
+      run_logged "Installing system dependencies" timeout 900s sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y "${system_packages[@]}"
+      ;;
+    arch)
+      package_manager_available || {
+        fail "Cannot safely start package installation while pacman is busy"
+        exit 1
+      }
+      say "Checking Arch package state"
+      ok "Arch package manager ready"
+      if ! run_logged "Installing system dependencies" timeout 900s sudo pacman -S --needed --noconfirm "${system_packages[@]}"; then
+        warn "If pacman reported a stale package database or partial upgrade, update the Arch system first:"
+        warn "  sudo pacman -Syu"
+        warn "Then rerun ./install.sh"
+        return 1
+      fi
+      ;;
+  esac
 }
 
+detect_platform
 say "Checking system requirements"
-apt_packages=()
-command -v python3 >/dev/null 2>&1 || apt_packages+=(python3)
-python3 -c 'import venv' >/dev/null 2>&1 || apt_packages+=(python3-venv)
+system_packages=()
+command -v "$PYTHON_BIN" >/dev/null 2>&1 || add_system_package python3
+if command -v "$PYTHON_BIN" >/dev/null 2>&1; then
+  "$PYTHON_BIN" -c 'import venv' >/dev/null 2>&1 || add_system_package python3-venv
+else
+  add_system_package python3-venv
+fi
 # gssapi is a core dependency for --force-kerb and may need to compile on
 # Kali/Python versions without a published wheel.
-python_header="/usr/include/$(python3 -c 'import sys; print("python" + str(sys.version_info.major) + "." + str(sys.version_info.minor))')/Python.h"
-[[ -f "$python_header" ]] || apt_packages+=(python3-dev)
-[[ -f /usr/include/krb5.h ]] || apt_packages+=(libkrb5-dev)
-if [[ "$mode" != minimal ]] && ! command -v pipx >/dev/null 2>&1; then apt_packages+=(pipx); fi
-if [[ "$mode" != minimal ]] && ! command -v nxc >/dev/null 2>&1; then apt_packages+=(netexec); fi
-if [[ "$mode" != minimal ]] && ! command -v kinit >/dev/null 2>&1; then apt_packages+=(krb5-user); fi
-if [[ "$mode" != minimal ]] && ! command -v go >/dev/null 2>&1; then apt_packages+=(golang-go); fi
-if [[ "$mode" != minimal ]] && ! libpcap_dev_installed; then apt_packages+=(libpcap-dev); fi
-if ((${#apt_packages[@]})); then
-  command -v sudo >/dev/null 2>&1 || { fail "Missing system packages: ${apt_packages[*]} (sudo unavailable)"; exit 1; }
+python_header=""
+if command -v "$PYTHON_BIN" >/dev/null 2>&1; then
+  python_header="/usr/include/$("$PYTHON_BIN" -c 'import sys; print("python" + str(sys.version_info.major) + "." + str(sys.version_info.minor))')/Python.h"
+fi
+[[ -n "$python_header" && -f "$python_header" ]] || add_system_package python3-dev
+[[ -f /usr/include/krb5.h ]] || add_system_package libkrb5-dev
+if [[ "$mode" != minimal ]] && ! command -v pipx >/dev/null 2>&1; then add_system_package pipx; fi
+if [[ "$mode" != minimal ]] && ! command -v nxc >/dev/null 2>&1; then add_system_package netexec; fi
+if [[ "$mode" != minimal ]] && ! command -v kinit >/dev/null 2>&1; then add_system_package krb5-user; fi
+if [[ "$mode" != minimal ]] && ! command -v go >/dev/null 2>&1; then add_system_package golang-go; fi
+if [[ "$mode" != minimal ]] && ! libpcap_dev_installed; then add_system_package libpcap-dev; fi
+if ((${#system_packages[@]})); then
+  command -v sudo >/dev/null 2>&1 || { fail "Missing system packages: ${system_packages[*]} (sudo unavailable)"; exit 1; }
   CURRENT_STAGE="Checking sudo access"
   say "$CURRENT_STAGE"
   if ! sudo -v; then
@@ -82,17 +196,12 @@ if ((${#apt_packages[@]})); then
     exit 1
   fi
   ok "Sudo access available"
-  if ! package_manager_available; then
-    fail "Cannot safely start package installation while apt/dpkg is busy"
-    exit 1
-  fi
-  run_logged "Updating package indexes" timeout 900s sudo apt-get update
-  run_logged "Installing system dependencies" timeout 900s sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y "${apt_packages[@]}"
+  install_system_packages
 fi
-command -v python3 >/dev/null 2>&1 && ok "Python 3 available"
+command -v "$PYTHON_BIN" >/dev/null 2>&1 && ok "Python 3 available"
 
 say "Creating AD-Enum virtual environment"
-run_logged "Creating Python virtual environment" python3 -m venv .venv
+run_logged "Creating Python virtual environment" "$PYTHON_BIN" -m venv .venv
 ok "Virtual environment ready"
 
 say "Installing AD-Enum core"
@@ -141,7 +250,7 @@ if [[ "$mode" != minimal ]]; then
     mkdir -p "$(dirname "$cinderpath_source")"
     if [[ ! -f /usr/include/pcap/pcap.h && ! -f /usr/include/pcap.h ]]; then
       CURRENT_STAGE="Checking CinderPath libpcap development headers"
-      fail "CinderPath build prerequisite missing: libpcap development headers (install libpcap-dev)"
+      fail "CinderPath build prerequisite missing: libpcap development headers (install $(system_package_name libpcap-dev))"
       exit 1
     fi
     if (( cinderpath_checkout_ok )); then

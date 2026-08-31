@@ -13,11 +13,11 @@ cd ad-enum
 ./install.sh
 ```
 
-The full/default path installs required Kali/Debian build dependencies,
-including `libpcap-dev`, before building CinderPath. It does not silently grant
-packet-capture capabilities. When SCCM/PXE evidence is found, AD-Enum checks
-the local interface and capabilities and can offer an explicit, operator-
-approved setup of CinderPath.
+The full/default path installs required Linux build dependencies, including
+`libpcap-dev` on Debian/Kali or `libpcap` on Arch, before building CinderPath.
+It does not silently grant packet-capture capabilities. When SCCM/PXE evidence
+is found, AD-Enum checks the local interface and capabilities and can offer an
+explicit, operator-approved setup of CinderPath.
 
 ```bash
 ./install.sh                 # core plus default collectors
