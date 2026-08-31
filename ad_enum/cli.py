@@ -27,6 +27,7 @@ from .gpo import normalize_gpos, collect_sysvol, collect_netlogon, inspect_file,
 from .posture import (normalize_smb, normalize_trusts, normalize_gpo_acls, normalize_laps,
                       attach_gpo_links, normalize_security_descriptors, analyze_effective_acls)
 from .kerberos import roastable, account_exposure, privileged_account_sids, account_security_context
+from .rules import CLIENT_AUTH_EKU
 from .delegation import enumerate_delegation, enumerate_gmsa
 from .core.console import Console
 from .core.coverage import CoverageReport
@@ -111,11 +112,105 @@ def _cred1_summary_lines(item, *, indent="  ", width=None, secret_style=None):
     return lines
 
 
+def _adcs_source_text(item):
+    labels = {"ldap-native": "Native AD-Enum", "certipy": "Certipy"}
+    sources = []
+    for source in item.get("sources", []) or []:
+        if not isinstance(source, dict):
+            continue
+        name = labels.get(str(source.get("source", "")).casefold(), source.get("source", ""))
+        if name and name not in sources:
+            sources.append(name)
+    evidence_source = (item.get("evidence", {}) or {}).get("source", "")
+    if evidence_source and evidence_source not in sources:
+        sources.append(evidence_source)
+    return " + ".join(sources)
+
+
+def _adcs_values(value):
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [str(item) for item in value if item not in (None, "")]
+    if value not in (None, ""):
+        return [str(value)]
+    return []
+
+
+def _certipy_rights(payload, principals):
+    access_rights = payload.get("Access Rights", {}) or {}
+    if not isinstance(access_rights, dict):
+        return []
+    principal_keys = {value.casefold() for value in principals}
+    result = []
+    canonical = {"manageca": "ManageCA", "managecertificates": "ManageCertificates"}
+    for right, entries in access_rights.items():
+        entries = _adcs_values(entries)
+        if principal_keys and not any(entry.casefold() in principal_keys for entry in entries):
+            continue
+        label = canonical.get(str(right).casefold(), str(right))
+        if label not in result:
+            result.append(label)
+    return result
+
+
+def _adcs_detail_lines(item, *, indent="    ", width=None, status=""):
+    evidence = item.get("evidence", {}) or {}
+    if item.get("rule") == "ESC1":
+        fields = []
+        for label, key in (("CA", "ca_name"), ("CA DNS", "ca_dns"), ("Template", "template")):
+            if evidence.get(key) not in (None, ""):
+                fields.append((label, evidence[key]))
+        subject_supply = evidence.get("enrollee_supplies_subject")
+        if subject_supply is not None:
+            fields.append(("Enrollee supplies subject", "ENABLED" if subject_supply else "DISABLED"))
+        client_authentication = evidence.get("client_authentication")
+        if client_authentication is not None:
+            fields.append(("Client authentication", "ENABLED" if client_authentication else "DISABLED"))
+        low_enroll = evidence.get("low_privilege_enrollment")
+        if low_enroll is not None:
+            fields.append(("Low-priv enroll", "YES" if low_enroll else "NO"))
+        if status:
+            fields.append(("Status", status))
+        source = _adcs_source_text(item)
+        if source:
+            fields.append(("Source", source))
+        template_state = str(evidence.get("certipy_template_enumeration", "")).upper()
+        if template_state == "UNAVAILABLE":
+            fields.append(("Note", "Certipy could not enumerate certificate templates"))
+        elif template_state == "NOT OBSERVED":
+            fields.append(("Note", "Certipy template enumeration was unavailable in this run"))
+        elif evidence.get("certipy_template_evaluated") and evidence.get("certipy_esc1") is False:
+            fields.append(("Note", "Certipy did not classify this template as ESC1"))
+        return _compact_field_lines(fields, indent=indent, width=width)
+    if item.get("rule") == "ESC7":
+        payload = evidence.get("certipy", {}) or {}
+        if not isinstance(payload, dict):
+            payload = {}
+        principals = _adcs_values(payload.get("User ACL Principals"))
+        fields = []
+        for label, key in (("CA", "CA Name"), ("CA DNS", "DNS Name"), ("Owner", "Owner")):
+            if payload.get(key) not in (None, ""):
+                fields.append((label, payload[key]))
+        if principals:
+            fields.append(("Effective principal", ", ".join(principals)))
+        rights = _certipy_rights(payload, principals)
+        if rights:
+            fields.append(("Rights", ", ".join(rights)))
+        if status:
+            fields.append(("Status", status))
+        source = _adcs_source_text(item)
+        if source:
+            fields.append(("Source", source))
+        return _compact_field_lines(fields, indent=indent, width=width)
+    return []
+
+
 def _finding_detail_lines(item, *, indent="    ", width=None, status_override=None,
                           secret_style=None):
     """Render detailed finding fields while preserving existing semantics."""
     status = status_override if status_override is not None else item.get("status", "").upper()
     evidence = item.get("evidence", {}) or {}
+    if item.get("category") == "ADCS" and item.get("rule") in {"ESC1", "ESC7"}:
+        return _adcs_detail_lines(item, indent=indent, width=width, status=status)
     if item.get("rule") == "ESC1":
         fields = [("Status", status)]
         if item.get("status") in {"disagreement", "live-confirmed disagreement"}:
@@ -1315,13 +1410,34 @@ def main():
         if not assessment.vulnerable:
             continue
         comparison = comparisons[template.name]
+        native_evidence = assessment.evidence
+        authentication_policy = {str(value) for value in
+                                 getattr(native_evidence, "authentication_policy", [])}
+        adcs_evidence = {
+            "native": native_evidence,
+            "ca_name": ca.name,
+            "ca_dns": ca.hostname,
+            "template": template.name,
+            "enrollee_supplies_subject": getattr(native_evidence, "subject_supply", None),
+            "client_authentication": (not authentication_policy or
+                                       bool(authentication_policy & CLIENT_AUTH_EKU)),
+            "low_privilege_enrollment": bool(getattr(native_evidence, "effective_enrollers", {})),
+            "source": "Native AD-Enum",
+        }
+        if certipy:
+            adcs_evidence["certipy_template_enumeration"] = getattr(
+                certipy, "template_enumeration_state", "NOT OBSERVED")
+            certipy_assessments = [x for x in comparison.assessments if x.source == "certipy"]
+            adcs_evidence["certipy_template_evaluated"] = bool(certipy_assessments)
+            if certipy_assessments:
+                adcs_evidence["certipy_esc1"] = certipy_assessments[0].vulnerable
         finding_records.append(NormalizedFinding(
             finding_id=f"adcs:esc1:{template.name}", category="ADCS", rule="ESC1",
             title=f"ESC1 — {template.name}", affected_object=template.dn or template.name,
             domain=workspace.domain,
             sources=[{"source": x.source, "vulnerable": x.vulnerable, "detail": x.detail,
                       "evidence": x.evidence} for x in comparison.assessments],
-            evidence={"native": assessment.evidence},
+            evidence=adcs_evidence,
             validation={"observations": [x.__dict__ for x in comparison.validations]},
             status=comparison.overall_status,
             workspace_artifacts=["ADCS/raw/ldap.json", "ADCS/findings.json"],

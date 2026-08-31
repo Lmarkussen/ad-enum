@@ -32,6 +32,7 @@ class CertipySnapshot:
     provenance: Provenance = field(default_factory=lambda: Provenance("certipy"))
     diagnostics: list[str] = field(default_factory=list)
     raw_data: dict = field(default_factory=dict)
+    template_enumeration_state: str = "NOT OBSERVED"
 
     def vulnerability_records(self):
         """Return every Certipy-reported vulnerability, including unknown IDs."""
@@ -77,7 +78,10 @@ class CertipyAdapter(ToolAdapter):
             data = data_or_path
             detail = "in-memory JSON"
         cas = list((data.get("Certificate Authorities") or {}).values())
-        templates = list((data.get("Certificate Templates") or {}).values())
+        template_section = data.get("Certificate Templates")
+        templates = list((template_section or {}).values())
+        template_state = ("AVAILABLE" if templates else
+                          ("UNAVAILABLE" if "Certificate Templates" in data else "NOT OBSERVED"))
         assessments = {}
         for item in templates:
             name = item.get("Template Name", "")
@@ -89,7 +93,8 @@ class CertipyAdapter(ToolAdapter):
             assessments[name] = SourceAssessment(self.source_name, esc1, item,
                                                   "Certipy JSON")
         return CertipySnapshot(cas, templates, assessments,
-                               Provenance(self.source_name, "find -json", detail), raw_data=data)
+                               Provenance(self.source_name, "find -json", detail), raw_data=data,
+                               template_enumeration_state=template_state)
 
     def run(self, *, domain, username, password=None, dc_ip=None, executable="certipy",
             extra_args=(), workspace=None, timeout=60, ldaps=False, force_kerb=False, stream=None):

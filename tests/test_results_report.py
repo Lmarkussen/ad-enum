@@ -423,7 +423,10 @@ def test_results_text_uses_compact_cred1_renderer(tmp_path):
 def test_finding_details_use_aligned_rows_and_wrap_long_values():
     findings = [
         {"category": "ADCS", "rule": "ESC1", "title": "ESC1 — Example-Template",
-         "status": "disagreement", "evidence": {}},
+         "status": "disagreement", "evidence": {
+             "certipy_template_enumeration": "AVAILABLE",
+             "certipy_template_evaluated": True, "certipy_esc1": False,
+         }},
         {"category": "KERBEROS", "rule": "Kerberoastable-account",
          "title": "Kerberoastable — example-user", "status": "corroborated",
          "evidence": {"enabled": True, "spns": ["one", "two"]}},
