@@ -2263,7 +2263,9 @@ def main():
     for line in _compact_field_lines(inventory_fields, indent="  "):
         console.line(line)
     console.line()
-    for line in _networkhound_summary_lines(dns_map, map_reference=networkhound_map_reference):
+    networkhound_lines = _networkhound_summary_lines(dns_map, map_reference=networkhound_map_reference)
+    console.heading(networkhound_lines[0])
+    for line in networkhound_lines[1:]:
         console.line(line)
     if share_inventory:
         console.line()

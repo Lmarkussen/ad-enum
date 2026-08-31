@@ -61,6 +61,16 @@ def test_networkhound_dns_map_export_and_report_reference_are_compact(tmp_path):
     assert "\x1b[" not in report
 
 
+def test_networkhound_console_header_uses_top_level_heading_style():
+    target_stream = TTY()
+    networkhound_stream = TTY()
+    Console(stream=target_stream).heading("Target")
+    Console(stream=networkhound_stream).heading(_networkhound_summary_lines({},)[0])
+
+    assert networkhound_stream.getvalue() == "\033[36mNetworkHound\033[0m\n"
+    assert target_stream.getvalue().replace("Target", "NetworkHound") == networkhound_stream.getvalue()
+
+
 def test_networkhound_large_map_stays_out_of_human_readable_summary(tmp_path):
     workspace = ScanWorkspace(tmp_path, "example.test", scan_id="scan-one")
     records = [{"fqdn": f"host{index:03d}.example.test", "short_name": f"HOST{index:03d}",
