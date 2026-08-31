@@ -1,4 +1,4 @@
-from ad_enum.cli import _results_text
+from ad_enum.cli import _results_text, _smb_share_access_lines
 from ad_enum.core.console import Console
 from ad_enum.core.workspace import ScanWorkspace
 from ad_enum.inventory import DomainInventory
@@ -32,12 +32,89 @@ def test_results_report_shows_normalized_smb_share_access(tmp_path):
                                {"host": "FILE01", "share": "Deploy$", "unc": "\\\\FILE01\\Deploy$", "readable": True, "writable": True},
                                {"host": "FILE01", "share": "Finance", "unc": "\\\\FILE01\\Finance", "readable": False, "writable": False},
                                {"host": "FILE01", "share": "Unknown", "unc": "\\\\FILE01\\Unknown"},
-                           ])
+                               ])
     assert "SMB Share Access" in report
-    assert "Public ........ READ" in report
-    assert "Deploy$ ........ READ / WRITE" in report
-    assert "Finance ........ DENIED" in report
-    assert "Unknown ........ UNKNOWN" in report
+    assert "FILE01\\Public" in report and "READ" in report
+    assert "FILE01\\Deploy$" in report and "READ / WRITE" in report
+    assert "FILE01\\Finance" in report and "DENIED" in report
+    assert "FILE01\\Unknown" in report and "UNKNOWN" in report
+
+
+def test_smb_share_access_is_grouped_and_sorted(tmp_path):
+    shares = [
+        {"host": "MSSQL", "share": "IPC$", "unc": r"\\MSSQL\IPC$", "readable": True},
+        {"host": "DC", "share": "SYSVOL", "unc": r"\\DC\SYSVOL", "readable": True},
+        {"host": "CLIENT", "share": "C$", "unc": r"\\CLIENT\C$", "readable": True, "writable": True},
+        {"host": "MECM", "share": "share_iso", "unc": r"\\MECM\share_iso", "readable": True, "writable": True},
+        {"host": "DC", "share": "IPC$", "unc": r"\\DC\IPC$", "readable": True},
+        {"host": "CLIENT", "share": "ADMIN$", "unc": r"\\CLIENT\ADMIN$", "readable": True, "writable": True},
+        {"host": "DC", "share": "NETLOGON", "unc": r"\\DC\NETLOGON", "readable": True},
+    ]
+    report = _results_text("SCCM.LAB", "dc.sccm.lab", {}, DomainInventory(), [], [], [],
+                           ScanWorkspace(tmp_path, "sccm.lab"), smb_shares=shares)
+    section = report.split("SMB Share Access\n", 1)[1].split("\nFindings", 1)[0]
+
+    assert section.index("Writable non-admin shares") < section.index("Administrative shares")
+    assert section.index("Administrative shares") < section.index("Other accessible shares")
+    assert "CLIENT\\ADMIN$" not in section.split("Administrative shares", 1)[0]
+    assert "CLIENT\\C$" not in section.split("Administrative shares", 1)[0]
+    assert section.index(r"MECM\share_iso") < section.index(r"CLIENT\ADMIN$")
+    assert section.index(r"CLIENT\ADMIN$") < section.index(r"CLIENT\C$")
+    assert section.index(r"CLIENT\C$") < section.index(r"DC\IPC$")
+    assert section.index(r"DC\IPC$") < section.index(r"DC\NETLOGON")
+    assert section.index(r"DC\NETLOGON") < section.index(r"DC\SYSVOL")
+    assert "Path ............." not in section
+    assert "MECM\\share_iso" in section and "READ / WRITE" in section
+    assert shares[3]["unc"] == r"\\MECM\share_iso"
+
+
+def test_smb_share_access_preserves_nonstandard_paths_and_omits_empty_groups(tmp_path):
+    shares = [{"host": "FILE01", "share": "Deploy", "unc": r"\\alias\Deploy", "readable": True}]
+    lines = _smb_share_access_lines(shares)
+    report = _results_text("EXAMPLE.LOCAL", "dc.example.local", {}, DomainInventory(), [], [], [],
+                           ScanWorkspace(tmp_path, "example.local"), smb_shares=shares)
+    section = report.split("SMB Share Access\n", 1)[1].split("\nFindings", 1)[0]
+
+    assert lines == [
+        "  Other accessible shares",
+        "    FILE01\\Deploy  READ",
+        r"      Path ............. \\alias\Deploy",
+    ]
+    assert section.count("Other accessible shares") == 1
+    assert "Writable non-admin shares" not in section
+    assert "Administrative shares" not in section
+    assert "Inaccessible / denied" not in section
+
+
+def test_smb_share_access_keeps_denied_group_after_accessible_groups(tmp_path):
+    shares = [
+        {"host": "FILE01", "share": "Denied", "unc": r"\\FILE01\Denied", "readable": False},
+        {"host": "FILE01", "share": "Unknown", "unc": r"\\FILE01\Unknown"},
+        {"host": "FILE01", "share": "Public", "unc": r"\\FILE01\Public", "readable": True},
+    ]
+    report = _results_text("EXAMPLE.LOCAL", "dc.example.local", {}, DomainInventory(), [], [], [],
+                           ScanWorkspace(tmp_path, "example.local"), smb_shares=shares)
+    section = report.split("SMB Share Access\n", 1)[1].split("\nFindings", 1)[0]
+
+    assert section.index("Other accessible shares") < section.index("Inaccessible / denied")
+    assert "FILE01\\Denied" in section and "DENIED" in section
+    assert "FILE01\\Unknown" in section and "UNKNOWN" in section
+
+
+def test_smb_share_access_console_and_results_use_the_same_lines(tmp_path):
+    shares = [{"host": "MECM", "share": "share_iso", "unc": r"\\MECM\share_iso",
+               "readable": True, "writable": True}]
+    report = _results_text("SCCM.LAB", "dc.sccm.lab", {}, DomainInventory(), [], [], [],
+                           ScanWorkspace(tmp_path, "sccm.lab"), smb_shares=shares)
+    console_stream = StringIO()
+    console = Console(stream=console_stream, no_color=True)
+    console.heading("SMB Share Access")
+    for line in _smb_share_access_lines(shares):
+        console.line(line)
+    console_section = console_stream.getvalue().split("SMB Share Access\n", 1)[1].rstrip("\n")
+    report_section = report.split("SMB Share Access\n", 1)[1].split("\nFindings", 1)[0].rstrip("\n")
+
+    assert console_section == report_section
 
 
 def test_aggregated_finding_lists_affected_objects(tmp_path):

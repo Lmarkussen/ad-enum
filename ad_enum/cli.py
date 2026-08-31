@@ -177,6 +177,73 @@ def _access_summary_lines(access_records):
     return lines
 
 
+def _smb_access_state(share):
+    if share.get("writable"):
+        return "READ / WRITE"
+    if share.get("readable") is True:
+        return "READ"
+    if share.get("readable") is False:
+        return "DENIED"
+    return "UNKNOWN"
+
+
+def _smb_display_name(share):
+    host = share.get("host") or share.get("ip", "unknown")
+    return f"{host}\\{share.get('share', 'unknown')}"
+
+
+def _smb_path_is_redundant(share, display_name):
+    path = share.get("unc")
+    if not path:
+        return False
+    expected = f"\\\\{display_name}"
+    normalize = lambda value: str(value).replace("/", "\\").rstrip("\\").casefold()
+    return normalize(path) == normalize(expected)
+
+
+def _smb_share_access_lines(shares):
+    """Render the compact, grouped human-readable SMB share summary.
+
+    This is presentation-only.  The share dictionaries, including their UNC
+    paths and access flags, are not modified here.
+    """
+    groups = {
+        "Writable non-admin shares": [],
+        "Administrative shares": [],
+        "Other accessible shares": [],
+        "Inaccessible / denied": [],
+    }
+    for share in shares or []:
+        state = _smb_access_state(share)
+        if state in {"DENIED", "UNKNOWN"}:
+            group = "Inaccessible / denied"
+        elif share.get("writable") and not is_standard_admin_share(share.get("share")):
+            group = "Writable non-admin shares"
+        elif is_standard_admin_share(share.get("share")):
+            group = "Administrative shares"
+        else:
+            group = "Other accessible shares"
+        groups[group].append((share, state))
+
+    entries = [item for group in groups.values() for item in group]
+    width = max((len(_smb_display_name(share)) for share, _ in entries), default=0)
+    lines = []
+    for title, items in groups.items():
+        if not items:
+            continue
+        if lines:
+            lines.append("")
+        lines.append(f"  {title}")
+        for share, state in sorted(items, key=lambda item: (
+                str(item[0].get("host") or item[0].get("ip", "")).casefold(),
+                str(item[0].get("share", "")).casefold())):
+            display_name = _smb_display_name(share)
+            lines.append(f"    {display_name:<{width}}  {state}")
+            if share.get("unc") and not _smb_path_is_redundant(share, display_name):
+                lines.append(f"      Path ............. {share['unc']}")
+    return lines
+
+
 def _results_text(root, target, external_results, inventory, cas, templates, all_findings,
                   workspace, *, corroborated=0, disagreements=0, smb_shares=None, services=None,
                   access_records=None, cred1=None):
@@ -199,18 +266,7 @@ def _results_text(root, target, external_results, inventory, cas, templates, all
                   Console.field("Disagreements", disagreements)])
     shares = smb_shares or []
     if shares:
-        lines.extend(["", "SMB Share Access"])
-        for share in shares:
-            if share.get("writable"):
-                access = "READ / WRITE"
-            elif share.get("readable") is True:
-                access = "READ"
-            elif share.get("readable") is False:
-                access = "DENIED"
-            else:
-                access = "UNKNOWN"
-            lines.append(f"  {share.get('host') or share.get('ip', 'unknown')}\\{share.get('share', 'unknown')} ........ {access}")
-            lines.append(f"    Path ............. {share.get('unc', 'unknown')}")
+        lines.extend(["", "SMB Share Access", *_smb_share_access_lines(shares)])
     service_lines = _service_summary_lines(services)
     if service_lines:
         lines.extend(["", "Service Exposure", *service_lines])
@@ -1357,17 +1413,8 @@ def main():
     if share_inventory:
         console.line()
         console.heading("SMB Share Access")
-        for share in share_inventory:
-            if share.get("writable"):
-                access = "READ / WRITE"
-            elif share.get("readable") is True:
-                access = "READ"
-            elif share.get("readable") is False:
-                access = "DENIED"
-            else:
-                access = "UNKNOWN"
-            console.line(f"  {share.get('host') or share.get('ip', 'unknown')}\\{share.get('share', 'unknown')} ........ {access}")
-            console.line(f"    Path ............. {share.get('unc', 'unknown')}")
+        for line in _smb_share_access_lines(share_inventory):
+            console.line(line)
     service_lines = _service_summary_lines(service_inventory, limit=20)
     if service_lines:
         console.line()
