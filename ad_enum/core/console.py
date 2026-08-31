@@ -31,6 +31,10 @@ class Console:
         """Highlight an explicit direct-control ACL primitive, when interactive."""
         return self.paint(text, "orange")
 
+    def finding_title(self, text):
+        """Render a finding headline with the consistent finding style."""
+        return self.paint(text, "yellow")
+
     def line(self, text=""):
         print(text, file=self.stream, flush=True)
 

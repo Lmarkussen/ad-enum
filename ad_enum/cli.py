@@ -1965,7 +1965,7 @@ def main():
                 evidence = item.get("evidence", {})
                 if item.get("category") == "ACL":
                     title = _acl_title(item, inventory)
-                console.status(f"  {title}", display_status)
+                console.line(console.finding_title(f"  {title}"))
                 objects = _affected_object_values(item, limit=10)
                 if objects:
                     console.line("    Affected objects")

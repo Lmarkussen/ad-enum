@@ -146,6 +146,32 @@ def test_orange_highlighting_is_clean_for_non_tty_and_no_color():
         assert console.highlight_secret("ExampleRecoveredSecret") == "ExampleRecoveredSecret"
         assert console.highlight_admin("[ADMIN]") == "[ADMIN]"
         assert console.highlight_control("ResetPassword") == "ResetPassword"
+        assert console.finding_title("ESC1 — Example-Template") == "ESC1 — Example-Template"
+
+
+def test_finding_titles_share_yellow_style_and_details_remain_plain():
+    console = Console(stream=TTY())
+    titles = [
+        "ESC1 — Example-Template",
+        "ESC7 — Example-CA",
+        "AS-REP roastable — example-user",
+        "Cleartext credential in GPO — Example-GPO",
+        "Group control — Example-Group",
+        r"Writable SMB share — FILE01\Share",
+        "CRED-1 — PXE boot media exposes credential material",
+        "Password complexity disabled",
+    ]
+
+    rendered = [console.finding_title(f"  {title}") for title in titles]
+
+    assert all(line.startswith("\033[33m  ") and line.endswith("\033[0m") for line in rendered)
+    assert all("\033[38;5;208m" not in line for line in rendered)
+
+    plain_findings = _finding_lines([{
+        "category": "ADCS", "rule": "ESC1", "title": "ESC1 — Example-Template",
+        "status": "confirmed", "evidence": {"template": "Example-Template"},
+    }])
+    assert "\033[" not in "\n".join(plain_findings)
 
 
 def test_orange_highlights_only_explicit_admin_marker():
