@@ -663,17 +663,31 @@ def _relay_finding_lines(items, *, title_style=None, host_identities=None, width
     for item in paths:
         protocol = str((item.get("evidence", {}) or {}).get("dest_protocol", "unknown")).casefold()
         by_protocol.setdefault(protocol, set()).add(_relay_host(item, host_identities))
+    signing_hosts = {_relay_signing_host(item, host_identities) for item in signing}
+    smb_hosts = by_protocol.get("smb", set())
+    smb_signing_backed = bool(smb_hosts) and smb_hosts.issubset(signing_hosts)
     if by_protocol:
         lines.append(_styled_finding_heading("Potential NTLM relay paths", title_style))
         for protocol in sorted(by_protocol, key=lambda value: (_RELAY_PROTOCOL_ORDER.get(value, 99), value)):
             lines.extend(["", f"    {protocol.upper()}"])
             lines.extend(f"      {host}" for host in sorted(by_protocol[protocol], key=str.casefold))
+        if smb_signing_backed:
+            # Replace the plain SMB protocol label in-place so the reason is
+            # visible where the relay candidates are listed, not in a second
+            # duplicate block below them.
+            smb_heading = "    SMB — signing not required"
+            for index, line in enumerate(lines):
+                if line == "    SMB":
+                    lines[index] = smb_heading
+                    break
     if signing:
-        if lines:
-            lines.append("")
-        lines.append(_styled_finding_heading("SMB relay candidates", title_style))
-        lines.append("    Signing not required")
-        hosts = sorted({_relay_signing_host(item, host_identities) for item in signing}, key=str.casefold)
+        remaining_hosts = signing_hosts - (smb_hosts if smb_signing_backed else set())
+        if remaining_hosts:
+            if lines:
+                lines.append("")
+            lines.append(_styled_finding_heading("SMB relay candidates", title_style))
+            lines.append("    Signing not required")
+        hosts = sorted(remaining_hosts, key=str.casefold)
         lines.extend(f"      {host}" for host in hosts)
     if remaining:
         if lines:

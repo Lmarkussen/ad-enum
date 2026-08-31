@@ -186,8 +186,10 @@ def test_relay_findings_are_grouped_by_protocol_and_signing_candidate():
 
     assert "Potential NTLM relay paths" in output
     assert output.index("    HTTP") < output.index("    LDAP") < output.index("    MSSQL") < output.index("    SMB")
+    assert "    SMB — signing not required" in output
     assert "mecm.example.test" in output
-    assert "SMB relay candidates\n    Signing not required\n      mecm.example.test" in output
+    assert "SMB relay candidates" not in output
+    assert "Signing not required" not in output
     assert "Potential NTLM relay path —" not in output
     assert findings == original
 
