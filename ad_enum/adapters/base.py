@@ -1,10 +1,9 @@
 from dataclasses import dataclass
-import shutil
 import subprocess
 import threading
 import queue
 import time
-from pathlib import Path
+from ..core.planner import find_executable
 
 @dataclass
 class ToolCapability:
@@ -19,11 +18,7 @@ class ToolAdapter:
     executable = "tool"
 
     def resolve_executable(self):
-        path = shutil.which(self.executable)
-        if path:
-            return path
-        candidate = Path.home() / ".local" / "bin" / self.executable
-        return str(candidate) if candidate.is_file() else None
+        return find_executable(self.executable)
 
     def detect(self):
         path = self.resolve_executable()

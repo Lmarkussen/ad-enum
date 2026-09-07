@@ -26,11 +26,11 @@ cd ad-enum
 ./install.sh
 ```
 
-Use `./install.sh --minimal` for core dependencies, `--full` for the extended
-tool set, or `--verbose` for installer diagnostics. A full install includes
-the libpcap development package, external collectors, and a source build of
-CinderPath; packet-capture capabilities for CinderPath remain explicit and
-opt-in at runtime.
+The default install provisions all required scan tools, including NetworkHound,
+RelayKing, and CinderPath, and verifies them with credential-free startup checks.
+Tools stay under `.venv/` and `.cache/`; no PATH changes or second setup step
+are needed. Use `--verbose` for installer diagnostics. Packet-capture
+capabilities for CinderPath remain explicit and opt-in at runtime.
 
 ## Quick start
 

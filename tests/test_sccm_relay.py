@@ -15,6 +15,7 @@ def test_sccm_inventory_keeps_candidates_and_unknown_pxe():
 
 
 def test_relayking_is_detectable_from_checkout(monkeypatch, tmp_path):
+    monkeypatch.setattr("ad_enum.core.planner.__file__", str(tmp_path / "ad_enum/core/planner.py"))
     monkeypatch.setattr("ad_enum.core.planner.shutil.which", lambda name: None)
     monkeypatch.setattr("ad_enum.core.planner.Path.home", lambda: tmp_path)
     (tmp_path / "RelayKing-Depth").mkdir()

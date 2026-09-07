@@ -71,12 +71,6 @@ run_logged() {
   warn "Installer log retained at $log"
   return 1
 }
-nxc_runtime_ok() {
-  command -v nxc >/dev/null 2>&1 || return 1
-  local output
-  output="$(timeout 4s nxc smb 127.0.0.1 --timeout 1 --no-progress 2>&1 || true)"
-  [[ "$output" != *"ImportError"* && "$output" != *"ModuleNotFoundError"* ]]
-}
 package_manager_available() {
   local lock holder
   local locks=()
@@ -106,6 +100,10 @@ system_package_name() {
     arch:libkrb5-dev) printf '%s\n' krb5 ;;
     arch:golang-go) printf '%s\n' go ;;
     arch:libpcap-dev) printf '%s\n' libpcap ;;
+    arch:rustc|arch:cargo) printf '%s\n' rust ;;
+    arch:git) printf '%s\n' git ;;
+    arch:build-essential) printf '%s\n' base-devel ;;
+    arch:dnsutils) printf '%s\n' bind ;;
     arch:pipx) printf '%s\n' python-pipx ;;
     arch:netexec) printf '%s\n' netexec ;;
     arch:krb5-user) printf '%s\n' krb5 ;;
@@ -165,12 +163,56 @@ install_system_packages() {
   esac
 }
 
+# Script-only upstreams retain their own import trees and dependencies.
+install_script_tool() {
+  local label="$1" url="$2" revision="$3" script="$4"
+  local source="$repo_dir/.cache/$label" launcher="$repo_dir/.venv/bin/$script"
+  if [[ ! -d "$source/.git" ]]; then
+    if [[ -e "$source" ]]; then
+      fail "$label checkout is incomplete: $source; move it aside and rerun"
+      return 1
+    fi
+    run_logged "Cloning $label from public HTTPS" timeout 120s git clone --depth 1 "$url" "$source"
+  fi
+  if [[ "$(git -C "$source" rev-parse HEAD)" != "$revision" ]]; then
+    run_logged "Fetching supported $label revision" timeout 120s git -C "$source" fetch --depth 1 "$url" "$revision"
+    run_logged "Selecting supported $label revision" git -C "$source" checkout --detach "$revision"
+  fi
+  run_logged "Creating $label environment" "$PYTHON_BIN" -m venv "$source/.venv"
+  run_logged "Installing $label dependencies" timeout 900s "$source/.venv/bin/python" -m pip install -r "$source/requirements.txt"
+  # Keep .py launchers valid Python while selecting the isolated interpreter.
+  "$PYTHON_BIN" - "$source" "$script" "$launcher" <<'PYTHON'
+import pathlib, sys
+source, script, launcher = sys.argv[1:]
+python = str(pathlib.Path(source) / ".venv/bin/python")
+target = str(pathlib.Path(source) / script)
+pathlib.Path(launcher).write_text(
+    "#!/usr/bin/env python3\nimport os, sys\n"
+    f"os.execv({python!r}, [{python!r}, {target!r}, *sys.argv[1:]])\n")
+PYTHON
+  chmod +x "$launcher"
+  if [[ "$script" == relayking.py ]]; then
+    # Upstream catches argparse's successful SystemExit and returns 1 for help.
+    # Import the entry module instead; doctor also validates its help options.
+    run_logged "Checking $label startup" timeout 30s "$source/.venv/bin/python" -c 'import sys; sys.path.insert(0, sys.argv[1]); import relayking' "$source"
+  else
+    run_logged "Checking $label startup" timeout 30s "$launcher" --help
+  fi
+}
+
 detect_platform
 say "Checking system requirements"
 system_packages=()
+command -v git >/dev/null 2>&1 || add_system_package git
+command -v cc >/dev/null 2>&1 || add_system_package build-essential
+if [[ "$mode" != minimal ]]; then
+  command -v rustc >/dev/null 2>&1 || add_system_package rustc
+  command -v cargo >/dev/null 2>&1 || add_system_package cargo
+fi
+if [[ "$mode" != minimal ]] && ! command -v nslookup >/dev/null 2>&1; then add_system_package dnsutils; fi
 command -v "$PYTHON_BIN" >/dev/null 2>&1 || add_system_package python3
 if command -v "$PYTHON_BIN" >/dev/null 2>&1; then
-  "$PYTHON_BIN" -c 'import venv' >/dev/null 2>&1 || add_system_package python3-venv
+  "$PYTHON_BIN" -c 'import venv, ensurepip' >/dev/null 2>&1 || add_system_package python3-venv
 else
   add_system_package python3-venv
 fi
@@ -182,8 +224,6 @@ if command -v "$PYTHON_BIN" >/dev/null 2>&1; then
 fi
 [[ -n "$python_header" && -f "$python_header" ]] || add_system_package python3-dev
 [[ -f /usr/include/krb5.h ]] || add_system_package libkrb5-dev
-if [[ "$mode" != minimal ]] && ! command -v pipx >/dev/null 2>&1; then add_system_package pipx; fi
-if [[ "$mode" != minimal ]] && ! command -v nxc >/dev/null 2>&1; then add_system_package netexec; fi
 if [[ "$mode" != minimal ]] && ! command -v kinit >/dev/null 2>&1; then add_system_package krb5-user; fi
 if [[ "$mode" != minimal ]] && ! command -v go >/dev/null 2>&1; then add_system_package golang-go; fi
 if [[ "$mode" != minimal ]] && ! libpcap_dev_installed; then add_system_package libpcap-dev; fi
@@ -210,31 +250,19 @@ run_logged "Installing AD-Enum dependencies" timeout 900s .venv/bin/python -m pi
 ok "AD-Enum core installed"
 
 if [[ "$mode" != minimal ]]; then
-  command -v pipx >/dev/null 2>&1 || { fail "pipx is unavailable; default toolset is incomplete"; exit 1; }
-  run_logged "Configuring pipx path" pipx ensurepath
-  for spec in "certipy-ad:Certipy" "bloodhound:BloodHound" "ldapdomaindump:LDAPDomainDump"; do
-    package="${spec%%:*}"; label="${spec##*:}"
-    run_logged "Installing $label" timeout 900s pipx install --force "$package"
-    ok "$label installed"
+  # Keep pipx isolation without user-wide launchers or shell PATH edits.
+  export PIPX_HOME="$repo_dir/.cache/pipx"
+  export PIPX_BIN_DIR="$repo_dir/.venv/bin"
+  export PATH="$repo_dir/.venv/bin:$PATH"
+  run_logged "Installing pipx" timeout 900s .venv/bin/python -m pip install pipx
+  for package in certipy-ad bloodhound; do
+    run_logged "Installing $package" timeout 900s .venv/bin/python -m pipx install --python "$repo_dir/.venv/bin/python" "$package"
   done
-  run_logged "Installing Impacket" timeout 900s pipx install --force impacket
-  ok "Impacket installed"
-  if command -v nxc >/dev/null 2>&1; then
-    if nxc_runtime_ok; then
-      ok "NetExec installed and protocol loader is available"
-    elif command -v pipx >/dev/null 2>&1; then
-      warn "Existing NetExec is present but its protocol loader failed; repairing with pipx"
-      run_logged "Installing NetExec" timeout 900s pipx install --force netexec
-      nxc_runtime_ok && ok "NetExec installed and protocol loader is available" || warn "NetExec remains unusable; inspect its bundled dependencies"
-    else
-      warn "NetExec is present but its protocol loader failed; install a supported NetExec build with pipx"
-    fi
-  else
-    # Use the maintained PyPI package through the same isolated pipx path as
-    # the other external collectors. Do not guess legacy CME flags here.
-    run_logged "Installing NetExec" timeout 900s pipx install --force netexec
-    if command -v nxc >/dev/null 2>&1; then ok "NetExec installed"; else warn "NetExec is not available; default toolset is incomplete"; fi
-  fi
+  run_logged "Installing NetExec" timeout 900s .venv/bin/python -m pipx install --python "$repo_dir/.venv/bin/python" "git+https://github.com/Pennyw0rth/NetExec.git@d640fb78b8f2cf25838405aa1ac615f3f27628db"
+  run_logged "Installing LDAPDomainDump" timeout 900s .venv/bin/python -m pip install ldapdomaindump
+  # Impacket and supporting scripts come with AD-Enum core.
+  install_script_tool NetworkHound https://github.com/MorDavid/NetworkHound.git 47ea549fef664ad29b1239b370c1220a6fffa1e0 NetworkHound.py
+  install_script_tool RelayKing-Depth https://github.com/depthsecurity/RelayKing-Depth.git 74e15350ff3610ed083d8886fa804f84c9a66238 relayking.py
   if command -v go >/dev/null 2>&1; then
     say "Installing CinderPath CRED-1 adapter"
     cinderpath_bin="$repo_dir/.venv/bin/cinderpath"
@@ -267,16 +295,23 @@ if [[ "$mode" != minimal ]]; then
     if "$cinderpath_bin" assess CRED-1 --help >/dev/null 2>&1; then
       ok "CRED-1 structured output supported"
     else
-      warn "CinderPath is present but CRED-1 structured output is unavailable"
+      fail "CinderPath startup failed: assess CRED-1 --help"
+      exit 1
     fi
     say "Building bounded SCCM PXE helper"
     run_logged "Building bounded SCCM PXE helper" timeout 900s go -C helpers/sccm_pxe build -o "$repo_dir/.venv/bin/ad-enum-sccm-pxe" .
     ok "Bounded SCCM PXE helper built"
   else
-    warn "Go is unavailable; bounded SCCM PXE helper was not built"
+    fail "Go is unavailable; required CinderPath and SCCM helper cannot be built"
+    exit 1
   fi
 fi
 
 CURRENT_STAGE="Running AD-Enum doctor"
 say "$CURRENT_STAGE"
-if .venv/bin/python ad-enum.py doctor; then ok "Installation complete"; else fail "Doctor reported an installation problem"; exit 1; fi
+if [[ "$mode" == minimal ]]; then
+  .venv/bin/python ad-enum.py doctor || warn "Core-only install: default scan tools are unavailable"
+else
+  run_logged "Verifying required scan tools with doctor" .venv/bin/python ad-enum.py doctor
+fi
+ok "Installation complete"

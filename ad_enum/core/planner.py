@@ -4,6 +4,8 @@ import shutil
 from pathlib import Path
 
 def find_executable(name):
+    candidate = Path(__file__).resolve().parents[2] / ".venv" / "bin" / name
+    if candidate.is_file(): return str(candidate)
     path = shutil.which(name)
     # Debian/Kali packages expose Certipy as certipy-ad while pipx commonly
     # installs the shorter certipy launcher.  Treat these as one capability.

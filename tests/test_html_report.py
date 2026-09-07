@@ -88,7 +88,7 @@ def test_html_shows_cred1_finding_credential_details():
 
 def test_installer_uses_explicit_netexec_package_path():
     installer = open("install.sh", encoding="utf-8").read()
-    assert "pipx install --force netexec" in installer
+    assert "git+https://github.com/Pennyw0rth/NetExec.git@" in installer
 
 
 def test_cred1_model_is_safe_and_never_implies_decryption():
