@@ -11,8 +11,8 @@ def scan(cas, templates, *, certipy=None, coverage=None):
                                                 for t in templates)))
     findings, comparisons = [], {}
     for template in templates:
-        for ca in publication.get(template.name, []):
-            ok, reasons, evidence = evaluate_esc1(template, ca, principals)
+        for ca in publication.get(template.name, []) or [CA("", "")]:
+            ok, reasons, evidence = evaluate_esc1(template, ca, principals, published=bool(ca.name))
             native = SourceAssessment("ldap-native", ok, evidence, "; ".join(reasons))
             findings.append((template, ca, native))
             comparisons.setdefault(template.name, Corroboration(template.name)).assessments.append(native)

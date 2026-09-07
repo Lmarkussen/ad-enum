@@ -136,7 +136,7 @@ def _adcs_source_text(item):
     labels = {"ldap-native": "Native AD-Enum", "certipy": "Certipy"}
     sources = []
     for source in item.get("sources", []) or []:
-        if not isinstance(source, dict):
+        if not isinstance(source, dict) or ("vulnerable" in source and source["vulnerable"] is None):
             continue
         name = labels.get(str(source.get("source", "")).casefold(), source.get("source", ""))
         if name and name not in sources:
@@ -202,6 +202,30 @@ def _adcs_detail_lines(item, *, indent="    ", width=None, status=""):
             fields.append(("Note", "Certipy did not classify this template as ESC1"))
         if not fields:
             return []
+        return _compact_field_lines(fields, indent=indent, width=width,
+                                    label_width=max(25, max(len(label) for label, _ in fields)))
+    if item.get("rule") == "ESC8":
+        payload = evidence.get("certipy", {}) or {}
+        fields = []
+        for label, key in (("CA", "CA Name"), ("CA DNS", "DNS Name")):
+            if payload.get(key):
+                fields.append((label, payload[key]))
+        web = payload.get("Web Enrollment")
+        if isinstance(web, dict):
+            for protocol in ("http", "https"):
+                channel = web.get(protocol) or {}
+                enabled = channel.get("enabled")
+                if isinstance(enabled, bool):
+                    fields.append((f"Web enrollment {protocol.upper()}", "ENABLED" if enabled else "DISABLED"))
+                binding = channel.get("channel_binding")
+                if isinstance(binding, bool):
+                    fields.append((f"{protocol.upper()} channel binding", "ENABLED" if binding else "DISABLED"))
+        elif web not in (None, ""):
+            fields.append(("Web enrollment", web))
+        if status:
+            fields.append(("Status", status))
+        fields.append(("Source", _adcs_source_text(item)))
+        fields.append(("Impact", "Web enrollment configuration may permit NTLM relay to AD CS"))
         return _compact_field_lines(fields, indent=indent, width=width,
                                     label_width=max(25, max(len(label) for label, _ in fields)))
     if item.get("rule") == "ESC7":
@@ -420,7 +444,7 @@ def _finding_detail_lines(item, *, indent="    ", width=None, status_override=No
     """Render detailed finding fields while preserving existing semantics."""
     status = status_override if status_override is not None else item.get("status", "").upper()
     evidence = item.get("evidence", {}) or {}
-    if item.get("category") == "ADCS" and item.get("rule") in {"ESC1", "ESC7"}:
+    if item.get("category") == "ADCS" and item.get("rule") in {"ESC1", "ESC7", "ESC8"}:
         return _adcs_detail_lines(item, indent=indent, width=width, status=status)
     if item.get("rule") == "ESC1":
         fields = [("Status", status)]
@@ -747,8 +771,6 @@ def _finding_item_lines(items, *, width=None, inventory=None, host_identities=No
     lines = []
     for item in items:
         status = item.get("status", "").upper()
-        if item.get("rule") == "ESC1" and status in {"DISAGREEMENT", "LIVE-CONFIRMED DISAGREEMENT"}:
-            status = "CONFIRMED"
         lines.append(_styled_finding_heading(_finding_title(item, inventory, host_identities), title_style))
         objects = _affected_object_values(item)
         if objects:
@@ -1919,11 +1941,11 @@ def main():
             adcs_evidence["certipy_template_enumeration"] = getattr(
                 certipy, "template_enumeration_state", "NOT OBSERVED")
             certipy_assessments = [x for x in comparison.assessments if x.source == "certipy"]
-            adcs_evidence["certipy_template_evaluated"] = bool(certipy_assessments)
+            adcs_evidence["certipy_template_evaluated"] = any(x.vulnerable is not None for x in certipy_assessments)
             if certipy_assessments:
                 adcs_evidence["certipy_esc1"] = certipy_assessments[0].vulnerable
         finding_records.append(NormalizedFinding(
-            finding_id=f"adcs:esc1:{template.name}", category="ADCS", rule="ESC1",
+            finding_id=f"adcs:esc1:{template.name}:{ca.name}", category="ADCS", rule="ESC1",
             title=f"ESC1 — {template.name}", affected_object=template.dn or template.name,
             domain=workspace.domain,
             sources=[{"source": x.source, "vulnerable": x.vulnerable, "detail": x.detail,
@@ -1933,18 +1955,34 @@ def main():
             status=comparison.overall_status,
             workspace_artifacts=["ADCS/raw/ldap.json", "ADCS/findings.json"],
             first_seen_scan=workspace.scan_id, current_scan=workspace.scan_id).as_dict())
+    workspace.write_json(workspace.findings_path("ADCS", "evaluations.json"), [
+        {"template": t.name, "ca": ca.name, "source": native.source,
+         "vulnerable": native.vulnerable, "reasons": native.detail, "evidence": native.evidence}
+        for t, ca, native in findings])
     certipy_records = certipy.vulnerability_records() if certipy else []
+    seen_certipy = set()
     for item in certipy_records:
-        if item["rule"].upper().startswith("ESC1") and any(
-                x["affected_object"] == item["affected_object"] for x in finding_records):
+        key = (item["rule"].upper(), item["object_type"], item["affected_object"].casefold())
+        if key in seen_certipy:
             continue
+        seen_certipy.add(key)
+        is_esc1 = item["rule"].upper() == "ESC1" and item["object_type"] == "template"
+        if is_esc1 and any(
+                x["rule"] == "ESC1" and str(x["evidence"].get("template", "")).casefold() == key[2]
+                for x in finding_records):
+            continue
+        comparison = next((v for k, v in comparisons.items() if k.casefold() == key[2]), None) if is_esc1 else None
+        source_records = ([{"source": x.source, "vulnerable": x.vulnerable,
+                            "detail": x.detail, "evidence": x.evidence} for x in comparison.assessments]
+                          if comparison else [{"source": "certipy", "vulnerable": True,
+                                               "detail": item["explanation"], "evidence": item["evidence"]}])
         finding_records.append(NormalizedFinding(
             finding_id=f"adcs:certipy:{item['rule']}:{item['affected_object']}",
             category="ADCS", rule=item["rule"], title=f"{item['rule']} — {item['affected_object']}",
             affected_object=item["affected_object"], domain=workspace.domain,
-            sources=[{"source": "certipy", "vulnerable": True,
-                      "detail": item["explanation"], "evidence": item["evidence"]}],
-            evidence={"certipy": item["evidence"]}, status="single-source",
+            sources=source_records,
+            evidence={"certipy": item["evidence"]},
+            status=comparison.overall_status if comparison else "single-source",
             workspace_artifacts=["ADCS/raw/certipy.json"], first_seen_scan=workspace.scan_id,
             current_scan=workspace.scan_id).as_dict())
     workspace.write_json(workspace.findings_path("ADCS"), finding_records)
@@ -2139,7 +2177,7 @@ def main():
     workspace.write_json(workspace.root / "external-results.json", external_results)
     published = set()
     for t, ca, native in findings:
-            published.add(t.name)
+            if ca.name: published.add(t.name)
             vulnerable, reasons = native.vulnerable, native.detail.split("; ") if native.detail else []
             if a.verbose:
                 console.debug_line(f"template={t.name} flags=0x{t.name_flags:x}/0x{t.enrollment_flags:x} ekus={t.ekus} application_policies={t.application_policies}")

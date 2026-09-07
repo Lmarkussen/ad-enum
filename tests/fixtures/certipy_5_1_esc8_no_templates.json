@@ -1,0 +1,24 @@
+{
+  "Certificate Authorities": {
+    "0": {
+      "Web Enrollment": {
+        "http": {
+          "enabled": true
+        },
+        "https": {
+          "enabled": false,
+          "channel_binding": null
+        }
+      },
+      "User Specified SAN": "Disabled",
+      "Request Disposition": "Issue",
+      "Enforce Encryption for Requests": "Enabled",
+      "[!] Vulnerabilities": {
+        "ESC8": "Web Enrollment is enabled over HTTP."
+      },
+      "CA Name": "Example-CA",
+      "DNS Name": "ca.example.test"
+    }
+  },
+  "Certificate Templates": "[!] Could not find any certificate templates"
+}

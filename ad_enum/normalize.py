@@ -43,26 +43,48 @@ def normalize_directory(raw):
     if not domain_sid:
         domain_sid = next((s.rsplit("-", 1)[0] for s in sid_by_dn.values()
                            if s.rsplit("-", 1)[-1] in {"512", "513", "515", "519"}), None)
-    low = {"S-1-1-0", "S-1-5-11"}
-    if domain_sid: low.update({f"{domain_sid}-513", f"{domain_sid}-515"})
-    # Domain Users is normally a primary group and therefore is not present in
-    # every user's member attribute. Include ordinary user/computer SIDs as
-    # candidate low-privilege subjects, while excluding identities whose
-    # transitive group membership identifies them as privileged.
-    privileged_group_rids = {"512", "519", "544", "548", "549", "550"}
+    # Primary groups are omitted from AD's member/memberOf links. They still
+    # participate in both privilege classification and enrollment access checks.
+    for identity in identities:
+        sid = sid_by_dn.get(str(identity.get("distinguishedName", "")).lower(), "")
+        if not sid:
+            continue
+        for dn in values(identity, "memberOf", []):
+            if str(dn).lower() in sid_by_dn:
+                parents[sid].add(sid_by_dn[str(dn).lower()])
+        primary = values(identity, "primaryGroupID", [])
+        if primary and sid.startswith("S-1-5-21-"):
+            parents[sid].add(f"{sid.rsplit('-', 1)[0]}-{primary[0]}")
+    universal = {"S-1-1-0", "S-1-5-11"}
+    low = set(universal)
+    if domain_sid:
+        low.update({f"{domain_sid}-513", f"{domain_sid}-515"})
+    privileged = {f"S-1-5-32-{rid}" for rid in (544, 548, 549, 550, 551)}
+    if domain_sid:
+        privileged.update(f"{domain_sid}-{rid}" for rid in (500, 512, 516, 518, 519, 521))
     for identity in identities:
         sid = sid_by_dn.get(str(identity.get("distinguishedName", "")).lower(), "")
         classes = {str(v).lower() for v in values(identity, "objectClass", [])}
-        if not sid or (classes and "group" in classes):
+        if not sid or "group" in classes:
             continue
-        if any(parent.rsplit("-", 1)[-1] in privileged_group_rids for parent in expand(sid)):
+        if int((values(identity, "userAccountControl", [0]) or [0])[0]) & 2:
+            continue
+        admin_count = (values(identity, "adminCount", [0]) or [0])[0]
+        admin_count_lower = (values(identity, "admincount", [0]) or [0])[0]
+        if str(admin_count).lower() in {"1", "true"} or str(admin_count_lower).lower() in {"1", "true"}:
+            continue
+        if expand(sid) & privileged:
             continue
         low.add(sid)
-    subjects = set().union(*(expand(s) for s in low))
+    # Never combine unrelated users' groups into one token, or evaluate a group
+    # allow independently of a deny that also applies to its members.
+    tokens = {sid: expand(sid) | universal for sid in low
+              if not (expand(sid) & privileged)}
+    subjects = set(tokens)
     templates = []
     for x in raw.get("templates", []):
         sd, sd_warnings = parse_security_descriptor_safe(values(x, "nTSecurityDescriptor", [b""])[0])
-        enroll, auto, _ = derive_template_rights(sd); effective = effective_enrollment(sd, subjects)
+        enroll, auto, _ = derive_template_rights(sd); effective = effective_enrollment(sd, subjects, principal_tokens=tokens)
         name = str(values(x, "cn", [""])[0]); flags = int(values(x, "msPKI-Certificate-Name-Flag", [0])[0] or 0)
         enroll_evidence = {sid: effective[sid] for sid in effective}
         templates.append(Template(name=name, display_name=str(values(x, "displayName", [name])[0]),
@@ -76,6 +98,6 @@ def normalize_directory(raw):
             authorized_signatures=int(values(x, "msPKI-RA-Signature", [0])[0] or 0), security_descriptor=sd,
             evidence={"raw_attributes": x, "enrollment_ace_evidence": enroll, "autoenrollment_ace_evidence": auto,
                       "low_privileged_sids": low, "low_privileged_subject_sids": subjects,
-                      "group_membership": parents, "warnings": sd_warnings},
+                      "group_membership": parents, "principal_tokens": tokens, "warnings": sd_warnings},
             provenance=[Provenance("ldap-native", "template collector", str(x.get("distinguishedName", ""))) ]))
     return raw.get("defaultNamingContext", ""), cas, templates

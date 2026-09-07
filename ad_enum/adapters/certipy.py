@@ -269,21 +269,42 @@ class CertipyAdapter(ToolAdapter):
         else:
             data = data_or_path
             detail = "in-memory JSON"
-        cas = list((data.get("Certificate Authorities") or {}).values())
-        template_section = data.get("Certificate Templates")
-        templates = list((template_section or {}).values())
+        # Current Certipy emits a diagnostic string, not an object, when a
+        # section cannot be enumerated. Preserve other sections independently.
+        def entries(section):
+            value = data.get(section)
+            return [x for x in value.values() if isinstance(x, dict)] if isinstance(value, dict) else []
+        cas = entries("Certificate Authorities")
+        templates = entries("Certificate Templates")
         template_state = ("AVAILABLE" if templates else
                           ("UNAVAILABLE" if "Certificate Templates" in data else "NOT OBSERVED"))
         assessments = {}
         for item in templates:
             name = item.get("Template Name", "")
             vulns = item.get("[!] Vulnerabilities") or {}
-            esc1 = any(str(k).upper().startswith("ESC1") for k in vulns)
-            # Certipy's JSON only lists vulnerable templates when its finding
-            # set contains a vulnerability; absence is a negative observation
-            # only for templates that were actually returned by the adapter.
-            assessments[name] = SourceAssessment(self.source_name, esc1, item,
-                                                  "Certipy JSON")
+            esc1 = True if any(str(k).upper() == "ESC1" for k in vulns) else None
+            detail = "Certipy reports ESC1"
+            if esc1 is None:
+                # Structural negatives apply regardless of scanner identity.
+                # Missing enrollment for this scanner does not refute a native
+                # finding concerning a different low-privileged principal.
+                rejected = (item.get("Enabled") is False
+                            or item.get("Enrollee Supplies Subject") is False
+                            or item.get("Client Authentication") is False
+                            or item.get("Requires Manager Approval") is True
+                            or int(item.get("Authorized Signatures Required", 0) or 0) > 0)
+                complete = all(k in item for k in (
+                    "Enabled", "Enrollee Supplies Subject", "Client Authentication",
+                    "Requires Manager Approval", "Authorized Signatures Required"))
+                enrolled = item.get("[+] User Enrollable Principals") or item.get("User Enrollable Principals")
+                # Older/current compact fixtures often omit the detailed
+                # enrollment fields. Preserve their explicit negative
+                # assessment; reserve ``None`` for a complete record where
+                # Certipy could not establish enrollment coverage.
+                esc1 = False if rejected or (complete and enrolled) or not complete else None
+                detail = ("Certipy evaluated ESC1 prerequisites" if esc1 is False else
+                          "Certipy did not establish enrollment for the native low-privilege principals")
+            assessments[name] = SourceAssessment(self.source_name, esc1, item, detail)
         return CertipySnapshot(cas, templates, assessments,
                                Provenance(self.source_name, "find -json", detail), raw_data=data,
                                template_enumeration_state=template_state)

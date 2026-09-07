@@ -16,13 +16,14 @@ def derive_template_rights(aces):
             enroll.pop(ace.sid, None); auto.pop(ace.sid, None)
     return enroll, auto, modify
 
-def effective_enrollment(aces, candidate_sids):
-    """Apply the ordered AD DACL algorithm to the enrollment extended right."""
+def effective_enrollment(aces, candidate_sids, *, principal_tokens=None):
+    """Evaluate the enrollment right across each principal's complete token."""
     result = {}
     for sid in candidate_sids:
+        token = principal_tokens.get(sid, {sid}) if principal_tokens is not None else {sid}
         granted = denied = False; evidence = []
         for ace in aces:
-            if ace.sid != sid or not ace.applies_to(TEMPLATE_CLASS_GUID, ENROLL_GUID): continue
+            if ace.sid not in token or not ace.applies_to(TEMPLATE_CLASS_GUID, ENROLL_GUID): continue
             if ace.kind == "deny" and not granted: denied = True; evidence.append(ace)
             elif ace.kind == "allow" and not denied: granted = True; evidence.append(ace)
         if granted and not denied: result[sid] = evidence

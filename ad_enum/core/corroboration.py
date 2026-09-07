@@ -27,7 +27,8 @@ class Corroboration:
         values = {a.vulnerable for a in self.assessments if a.vulnerable is not None}
         if len(values) > 1:
             return "disagreement"
-        if len(values) == 1 and len(self.assessments) > 1:
+        if len(values) == 1 and len({a.source for a in self.assessments
+                                     if a.vulnerable is not None}) > 1:
             return "corroborated"
         return "single-source"
 

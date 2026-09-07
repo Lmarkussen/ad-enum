@@ -657,7 +657,7 @@ def test_finding_details_use_aligned_rows_and_wrap_long_values():
     assert "------------[ KERBEROS ]------------" in output
     assert "------------[ GPO ]------------" in output
     assert "------------[ ACL ]------------" in output
-    assert "Status                     CONFIRMED" in output
+    assert "Status                     DISAGREEMENT" in output
     assert "Note                       Certipy did not classify this template as" in output
     assert "...." not in output
     assert "WriteServicePrincipalName  KERBEROS CONTROL" in output
