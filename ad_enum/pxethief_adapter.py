@@ -53,6 +53,18 @@ _STEP_RE = re.compile(r'In TS Step "([^"]*)"')
 _CRED_LINE_RE = re.compile(r"^\s*([A-Za-z][A-Za-z0-9_]*)\s*-\s*(\S.*?)\s*$")
 _CRED_NAME_HINTS = ("password", "account", "username", "user")
 
+# --- OSD task-sequence correlation ---------------------------------------
+# PXEThief emits raw task-sequence variables.  AD-Enum correlates the related
+# account/password variables into operator-friendly credentials for the human
+# report while every original variable name is preserved as structured
+# evidence (``raw``) so nothing is destroyed by the friendlier presentation.
+_NAA_TOKEN = "networkaccessaccount"
+_REGISTERED_USER_TOKENS = ("registeredusername", "registereduser")
+_LOCAL_ADMIN_TOKEN = "localadmin"
+_JOIN_TOKEN = "join"
+_PASSWORD_TOKENS = ("password", "passwd", "pwd", "secret")
+_ACCOUNT_TOKENS = ("account", "username", "user")
+
 
 def _repo_root(explicit=None):
     return Path(explicit) if explicit else Path(__file__).resolve().parents[1]
@@ -206,6 +218,110 @@ def parse_pxethief_output(text):
     else:
         result["errors"].append("PXEThief produced no recognized PXE state marker")
     return result
+
+
+def _osd_key(name):
+    """Casefold a variable name and drop separators for robust matching."""
+    return re.sub(r"[^a-z0-9]", "", str(name or "").casefold())
+
+
+def _osd_password(name):
+    key = _osd_key(name)
+    return any(token in key for token in _PASSWORD_TOKENS)
+
+
+def _osd_account(name):
+    key = _osd_key(name)
+    return any(token in key for token in _ACCOUNT_TOKENS)
+
+
+def _osd_label(name, fallback):
+    return str(name or "").strip() or fallback
+
+
+def _pxe_credential(*, label, kind, account, value, step, raw, order):
+    return {"label": label, "type": kind, "account": account or "", "value": value,
+            "step": step, "raw": [name for name in raw if name], "order": order}
+
+
+def correlate_pxethief_recovered(items):
+    """Correlate raw PXEThief task-sequence variables into logical credentials.
+
+    Returns ``{"credentials": [...], "accounts": [...], "metadata": [...]}``.
+
+    ``OSDJoinAccount`` and ``OSDJoinPassword`` found in the same task-sequence
+    step become a single ``Domain Join Credential``; ``OSDLocalAdminPassword``
+    becomes a ``Local Administrator Password``; ``NetworkAccessAccount`` stays
+    paired; ``OSDRegisteredUserName`` is deployment metadata, never a
+    credential.  Pairing is scoped to one step so account/password values from
+    different steps are never cross-paired.  Every record keeps the original
+    variable name(s) so structured evidence is preserved.
+    """
+    credentials, accounts, metadata = [], [], []
+    groups, group_index = [], {}
+    for item in items or []:
+        if not isinstance(item, dict) or item.get("value") in (None, ""):
+            continue
+        step = str(item.get("step") or "")
+        if step not in group_index:
+            group_index[step] = len(groups)
+            groups.append((step, []))
+        groups[group_index[step]][1].append(item)
+
+    for step, group in groups:
+        pending_accounts, pending_passwords = [], []
+        for item in group:
+            key = _osd_key(item.get("name"))
+            if _NAA_TOKEN in key or item.get("username"):
+                credentials.append(_pxe_credential(
+                    label="Network Access Account", kind="Network Access Account",
+                    account=item.get("username") or "", value=item.get("value"),
+                    step=step, raw=[item.get("name")], order=0))
+            elif any(token in key for token in _REGISTERED_USER_TOKENS):
+                metadata.append({"label": "Registered User", "value": item.get("value"),
+                                 "step": step, "name": item.get("name")})
+            elif _LOCAL_ADMIN_TOKEN in key and _osd_password(key):
+                credentials.append(_pxe_credential(
+                    label="Local Administrator Password",
+                    kind="Local Administrator Password",
+                    account=item.get("username") or "Administrator",
+                    value=item.get("value"), step=step, raw=[item.get("name")], order=1))
+            elif _JOIN_TOKEN in key and _osd_account(key):
+                pending_accounts.append(item)
+            elif _JOIN_TOKEN in key and _osd_password(key):
+                pending_passwords.append(item)
+            elif _osd_password(key):
+                credentials.append(_pxe_credential(
+                    label=_osd_label(item.get("name"), "Recovered secret"),
+                    kind="Recovered Secret", account=item.get("username") or "",
+                    value=item.get("value"), step=step, raw=[item.get("name")], order=3))
+            elif _osd_account(key):
+                accounts.append({"label": ("Domain Join Account" if _JOIN_TOKEN in key
+                                           else _osd_label(item.get("name"), "Account")),
+                                 "account": item.get("value"), "step": step,
+                                 "name": item.get("name")})
+            else:
+                metadata.append({"label": _osd_label(item.get("name"), "Metadata"),
+                                 "value": item.get("value"), "step": step,
+                                 "name": item.get("name")})
+        # Pair join account/password variables within this step only.
+        for index in range(max(len(pending_accounts), len(pending_passwords))):
+            account_item = pending_accounts[index] if index < len(pending_accounts) else None
+            password_item = pending_passwords[index] if index < len(pending_passwords) else None
+            raw = [x.get("name") for x in (account_item, password_item) if x]
+            if password_item is not None:
+                credentials.append(_pxe_credential(
+                    label="Domain Join Credential", kind="Domain Join Password",
+                    account=(account_item or {}).get("value", ""),
+                    value=password_item.get("value"), step=step, raw=raw, order=2))
+            else:
+                accounts.append({"label": "Domain Join Account",
+                                 "account": account_item.get("value"), "step": step,
+                                 "name": account_item.get("name")})
+    credentials.sort(key=lambda item: item["order"])
+    for credential in credentials:
+        credential.pop("order", None)
+    return {"credentials": credentials, "accounts": accounts, "metadata": metadata}
 
 
 def run_pxethief(target, *, timeout=120, workdir, root=None):

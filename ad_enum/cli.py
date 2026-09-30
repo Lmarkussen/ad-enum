@@ -39,7 +39,7 @@ from .recon import (normalize_mssql, normalize_dfs, normalize_services,
 from .service_probe import DEFAULT_SERVICES, probe_known_services
 from .access import from_netexec_hosts, merge_access, filter_redundant_access_targets
 from .adapters.netexec import NetExecAdapter
-from .pxethief_adapter import run_pxethief, pxethief_capability
+from .pxethief_adapter import run_pxethief, pxethief_capability, correlate_pxethief_recovered
 
 
 CATEGORY_ORDER = ("ADCS", "POLICY", "KERBEROS", "ACCOUNT", "DELEGATION",
@@ -750,8 +750,9 @@ def _recovered_material(items):
 def _recovered_value_label(item):
     """Label a recovered value as a password only when that is what it is."""
     name = str(item.get("name") or item.get("type") or "")
-    if item.get("username") or any(token in name.casefold()
-                                   for token in ("password", "passwd", "pwd", "secret")):
+    if (item.get("username") or item.get("account") or any(
+            token in name.casefold()
+            for token in ("password", "passwd", "pwd", "secret"))):
         return "Password"
     return "Value"
 
@@ -766,11 +767,13 @@ def _recovered_credential_lines(items, *, indent="    ", width=None, secret_styl
     for index, item in enumerate(items[:limit]):
         if index:
             lines.append("")
-        name = str(item.get("name") or item.get("type") or "Recovered secret")
+        name = str(item.get("label") or item.get("name") or item.get("type")
+                   or "Recovered secret")
         lines.append(f"{indent}  {name}")
         fields = []
-        if item.get("username"):
-            fields.append(("Account", item["username"]))
+        account = item.get("account") or item.get("username")
+        if account:
+            fields.append(("Account", account))
         fields.append((_recovered_value_label(item), item.get("value", "")))
         if item.get("step"):
             fields.append(("Step", item["step"]))
@@ -782,6 +785,34 @@ def _recovered_credential_lines(items, *, indent="    ", width=None, secret_styl
         lines.append(f"{indent}  ... {len(items) - limit} additional recovered credential(s); "
                      "see the credential artifacts")
     return lines
+
+
+def _pxe_account_lines(accounts, *, indent="    ", width=None):
+    """Show recovered account identifiers that were not paired with a secret."""
+    entries = [entry for entry in (accounts or [])
+               if isinstance(entry, dict) and entry.get("account") not in (None, "")]
+    if not entries:
+        return []
+    lines = ["", f"{indent}Account information"]
+    for entry in entries:
+        lines.append(f"{indent}  {entry.get('label') or 'Account'}")
+        fields = [("Account", entry["account"])]
+        if entry.get("step"):
+            fields.append(("Step", entry["step"]))
+        lines.extend(_compact_field_lines(fields, indent=indent + "    ", width=width))
+    return lines
+
+
+def _pxe_metadata_lines(metadata, *, indent="    ", width=None):
+    """Show non-credential PXE deployment metadata (never a credential)."""
+    entries = [entry for entry in (metadata or [])
+               if isinstance(entry, dict) and entry.get("value") not in (None, "")]
+    if not entries:
+        return []
+    fields = [(str(entry.get("label") or entry.get("name") or "Metadata"), entry.get("value"))
+              for entry in entries]
+    return ["", f"{indent}Deployment metadata",
+            *_compact_field_lines(fields, indent=indent + "  ", width=width)]
 
 
 def _credentials_artifact_lines(reference, *, indent="    ", shown=True):
@@ -816,23 +847,27 @@ def _sccm_finding_lines(items, *, title_style=None, host_identities=None, width=
             fields.append(("State", state))
         if evidence.get("reason"):
             fields.append(("Reason", evidence["reason"]))
-        recovered_items = _recovered_material(evidence.get("recovered"))
-        secret_items = [item for item in recovered_items
-                        if _recovered_value_label(item) == "Password"]
-        if evidence.get("recovered_count"):
-            fields.append(("Recovered", f"{evidence['recovered_count']} items"))
+        correlation = correlate_pxethief_recovered(evidence.get("recovered"))
+        credentials = correlation["credentials"]
+        raw_count = evidence.get("recovered_count")
+        if raw_count is None:
+            raw_count = len(_recovered_material(evidence.get("recovered")))
+        if raw_count:
+            fields.append(("Recovered", f"{raw_count} items"))
         # Only report a separate credential count when some recovered items are
-        # account identifiers rather than secrets.
-        if secret_items and len(secret_items) != evidence.get("recovered_count"):
-            fields.append(("Credentials", len(secret_items)))
+        # correlated into credentials rather than being one-to-one secrets.
+        if credentials and len(credentials) != raw_count:
+            fields.append(("Credentials", len(credentials)))
         if evidence.get("source"):
             fields.append(("Source", evidence["source"]))
         if fields:
             lines.extend(_compact_field_lines(fields, indent="    ", width=width))
-        lines.extend(_recovered_credential_lines(recovered_items, width=width,
+        lines.extend(_recovered_credential_lines(credentials, width=width,
                                                  secret_style=secret_style))
+        lines.extend(_pxe_account_lines(correlation["accounts"], width=width))
+        lines.extend(_pxe_metadata_lines(correlation["metadata"], width=width))
         lines.extend(_credentials_artifact_lines(evidence.get("credentials_artifact"),
-                                                 shown=bool(recovered_items)))
+                                                 shown=bool(credentials)))
     for item in sorted(dp_content, key=order):
         if lines:
             lines.append("")
@@ -2278,7 +2313,7 @@ def main():
 
     credential_index = {}
 
-    def add_credential(*, account, value, kind, source, context):
+    def add_credential(*, account, value, kind, source, context, variables=None):
         """Deduplicate by value while preserving every provenance source."""
         key = (str(account or "UNKNOWN").casefold(), str(value))
         existing = credential_index.get(key)
@@ -2287,6 +2322,9 @@ def main():
                 existing["sources"].append(source)
             if context and context not in existing["contexts"]:
                 existing["contexts"].append(context)
+            for variable in variables or []:
+                if variable and variable not in existing.setdefault("variables", []):
+                    existing["variables"].append(variable)
             existing["source"] = " + ".join(existing["sources"]) or existing["source"]
             existing["context"] = "; ".join(existing["contexts"]) or existing["context"]
             return
@@ -2295,6 +2333,9 @@ def main():
                  "context": context or "",
                  "sources": [source] if source else [],
                  "contexts": [context] if context else []}
+        preserved = [variable for variable in (variables or []) if variable]
+        if preserved:
+            entry["variables"] = preserved
         credential_index[key] = entry
         discovered_credentials.append(entry)
 
@@ -2309,13 +2350,14 @@ def main():
                        context=item.get("gpo", {}).get("display_name") or item.get("title"))
     for item in pxe_findings:
         evidence = item["evidence"]
-        for secret in evidence.get("recovered", []) or []:
+        for secret in correlate_pxethief_recovered(evidence.get("recovered"))["credentials"]:
             if not secret.get("value"):
                 continue
-            add_credential(account=secret.get("username") or "", value=secret["value"],
-                           kind=secret.get("name") or "PXE media credential",
+            add_credential(account=secret.get("account") or "", value=secret["value"],
+                           kind=secret.get("type") or "PXE media credential",
                            source=evidence.get("source") or "PXEThief",
-                           context=f"PXE media — {evidence.get('dp', '')}")
+                           context=secret.get("step") or f"PXE media — {evidence.get('dp', '')}",
+                           variables=secret.get("raw"))
     for item in dp_findings:
         evidence = item["evidence"]
         for secret in evidence.get("credentials", []) or []:
