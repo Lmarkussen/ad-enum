@@ -392,13 +392,13 @@ def test_target_collectors_inventory_results_are_clean_aligned_fields(tmp_path):
             inventory.add(kind, f"{kind}-{index}")
     report = _results_text(
         "example.test", "192.0.2.10",
-        {"bloodhound": {"status": "PASS"}, "adcs-certipy": {"status": "PASS"}},
+        {"adcs-certipy": {"status": "PASS"}},
         inventory, ["CA"], ["Template"], [], ScanWorkspace(tmp_path, "example.test"),
     )
     sections = report.split("Target\n", 1)[1].split("Correlation\n", 1)[0]
 
     assert "Domain Controller  192.0.2.10" in sections
-    assert "BloodHound      PASS" in sections
+    assert "Certipy         PASS" in sections
     assert "Users               2" in sections
     assert "Domain Controllers  1" in sections
     assert "........" not in sections
@@ -843,7 +843,7 @@ def test_compact_fields_align_continuations_and_keep_long_paths_complete():
 
 def test_console_field_has_one_status_column():
     lines = [Console.field(label, "PASS") for label in
-             ("Native LDAP", "BloodHound", "Certipy", "LDAPDomainDump", "NetExec")]
+             ("Native LDAP", "Certipy", "LDAPDomainDump", "NetExec")]
     assert len({line.index("PASS") for line in lines}) == 1
 
 

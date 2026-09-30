@@ -1,5 +1,4 @@
 """Ordered, failure-isolated execution of external read-only collectors."""
-from .adapters.bloodhound import BloodHoundAdapter
 from .adapters.certipy import CertipyAdapter
 from .adapters.ldapdomaindump import LDAPDomainDumpAdapter
 from .adapters.netexec import NetExecAdapter
@@ -8,7 +7,6 @@ from .adapters.relayking import RelayKingAdapter
 from .inventory import native_inventory
 
 ADAPTERS = {
-    "bloodhound": BloodHoundAdapter,
     "adcs-certipy": CertipyAdapter,
     "ldapdomaindump": LDAPDomainDumpAdapter,
     "netexec": NetExecAdapter,

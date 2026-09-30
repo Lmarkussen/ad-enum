@@ -3,8 +3,8 @@
 Active Directory reconnaissance and security-posture enumeration with one
 consolidated operator view.
 
-AD-Enum combines native LDAP checks with mature collectors such as BloodHound,
-Certipy, LDAPDomainDump, and NetExec. It normalizes their observations,
+AD-Enum combines native LDAP checks with mature collectors such as Certipy,
+LDAPDomainDump, and NetExec. It normalizes their observations,
 correlates findings, and keeps detailed source artifacts available—so an
 operator does not have to search every tool's output directory.
 
@@ -87,7 +87,6 @@ Each completed scan uses `./<domain>/`:
     credentials.txt
     credentials.json
     vulnerabilities/
-    BloodHound/
     LDAP/
     GPO/
     ACL/

@@ -1099,7 +1099,7 @@ def _results_text(root, target, external_results, inventory, cas, templates, all
     ], indent="  "))
     lines.extend(["", "Collectors"])
     collector_fields = [("Native LDAP", "PASS")]
-    for module_id, label in (("bloodhound", "BloodHound"), ("adcs-certipy", "Certipy"),
+    for module_id, label in (("adcs-certipy", "Certipy"),
                              ("ldapdomaindump", "LDAPDomainDump"), ("netexec", "NetExec")):
         state = external_results.get(module_id, {}).get("status", "NOT CHECKED")
         display = {"PASS": "PASS", "FAILED": "FAILED", "UNAVAILABLE": "NOT AVAILABLE"}.get(state, state)
@@ -1273,7 +1273,7 @@ def main():
     console.complete("Anonymous LDAP posture complete", "WARNING" if anonymous_ldap.get("error") else "PASS")
     requested = []
     for module in (x.strip().lower() for x in a.modules.split(",") if x.strip()):
-        if module == "all": requested.extend(("bloodhound", "adcs-certipy", "ldapdomaindump", "netexec", "ldap", "adcs-native", "kerberos", "delegation", "sccm-discovery", "relay", "networkhound", "gpo"))
+        if module == "all": requested.extend(("adcs-certipy", "ldapdomaindump", "netexec", "ldap", "adcs-native", "kerberos", "delegation", "sccm-discovery", "relay", "networkhound", "gpo"))
         elif module == "adcs": requested.extend(("ldap", "adcs-native", "adcs-certipy"))
         else: requested.append(module)
     plan = ExecutionPlanner().plan(requested or ["adcs-native"])
@@ -1497,7 +1497,7 @@ def main():
     workspace.write_text(workspace.module_dir("DomainSecurity") / "findings.txt",
                          "\n".join(f"[{x['category']}] {x['title']}" for x in domain_security_findings) +
                          ("\n" if domain_security_findings else ""))
-    labels = {"bloodhound": "BloodHound", "adcs-certipy": "Certipy",
+    labels = {"adcs-certipy": "Certipy",
               "ldapdomaindump": "LDAPDomainDump", "netexec": "NetExec"}
     for module_id, result in external_results.items():
         status = result.get("status")
@@ -2243,7 +2243,7 @@ def main():
                     label: {"PASS": "PASS", "FAILED": "FAILED", "UNAVAILABLE": "NOT AVAILABLE"}.get(
                         external_results.get(module_id, {}).get("status", "NOT CHECKED"),
                         external_results.get(module_id, {}).get("status", "NOT CHECKED"))
-                    for module_id, label in (("bloodhound", "BloodHound"), ("adcs-certipy", "Certipy"),
+                    for module_id, label in (("adcs-certipy", "Certipy"),
                                               ("ldapdomaindump", "LDAPDomainDump"), ("netexec", "NetExec"))}},
                 "inventory": {"Users": counts.get("users", 0), "Groups": counts.get("groups", 0),
                               "Computers": counts.get("computers", 0),
@@ -2287,7 +2287,7 @@ def main():
     console.line()
     console.heading("Collectors")
     collector_fields = [("Native LDAP", "PASS")]
-    for module_id, label in (("bloodhound", "BloodHound"), ("adcs-certipy", "Certipy"),
+    for module_id, label in (("adcs-certipy", "Certipy"),
                              ("ldapdomaindump", "LDAPDomainDump"), ("netexec", "NetExec")):
         result = external_results.get(module_id, {})
         state = result.get("status", "NOT CHECKED")

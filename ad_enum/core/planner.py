@@ -54,7 +54,6 @@ class ModuleRegistry:
         r.register(ModuleSpec("ldap", "Native LDAP", "directory", outputs=("LDAP",)))
         r.register(ModuleSpec("adcs-native", "AD CS native", "adcs", dependencies=("ldap",), outputs=("ADCS",)))
         r.register(ModuleSpec("adcs-certipy", "AD CS Certipy", "adcs", required_tools=("certipy",), dependencies=("ldap",), outputs=("ADCS",)))
-        r.register(ModuleSpec("bloodhound", "BloodHound", "directory", required_tools=("bloodhound-python",), outputs=("BloodHound",)))
         r.register(ModuleSpec("ldapdomaindump", "LDAPDomainDump", "directory", required_tools=("ldapdomaindump",), outputs=("LDAPDomainDump",)))
         r.register(ModuleSpec("netexec", "NetExec", "smb", required_tools=("nxc",), outputs=("NetExec",)))
         r.register(ModuleSpec("sccm-discovery", "SCCM discovery", "sccm", outputs=("SCCM",)))

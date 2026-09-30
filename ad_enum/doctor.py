@@ -8,7 +8,6 @@ from .core.planner import find_executable
 # Check the command interfaces used by the existing adapters, without targets.
 REQUIRED_TOOLS = (
     ("Certipy", "certipy", ("find", "--help"), ()),
-    ("BloodHound", "bloodhound-python", ("--help",), ()),
     ("LDAPDomainDump", "ldapdomaindump", ("--help",), ()),
     ("NetExec", "nxc", ("smb", "--help"), ()),
     ("Impacket", "smbclient.py", ("--help",), ()),

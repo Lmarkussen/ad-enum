@@ -14,8 +14,7 @@ media keys, PFX material, and other operational crypto material are not report
 artifacts.
 
 Module directories contain normalized inventory, findings, provenance, and
-source artifacts. `BloodHound/` stores its source JSON/ZIP artifacts directly.
-`vulnerabilities/` contains active normalized findings, while
+source artifacts. `vulnerabilities/` contains active normalized findings, while
 `scans/<scan-id>/` retains completed historical output.
 
 Use `--html-out path/report.html` for an optional standalone browser-readable

@@ -24,11 +24,11 @@ def test_module_paths_and_relative_provenance(tmp_path):
     path = ws.write_json(ws.findings_path("ADCS"), {"artifact": "ok"})
     assert ws.relative(path) == "ADCS/findings.json"
     assert json.loads(path.read_text())["artifact"] == "ok"
-    assert not (ws.root / "BloodHound").exists()
+    assert not (ws.root / "NetExec").exists()
 
 def test_module_names_keep_operator_facing_layout(tmp_path):
     ws = ScanWorkspace(tmp_path, "local.lab", scan_id="one")
-    assert ws.module_dir("BloodHound").name == "BloodHound"
+    assert ws.module_dir("SCCM").name == "SCCM"
     assert ws.raw_dir("LDAPDomainDump").parts[-2:] == ("LDAPDomainDump", "raw")
 
 def test_existing_workspace_is_non_destructive(tmp_path):

@@ -255,7 +255,7 @@ if [[ "$mode" != minimal ]]; then
   export PIPX_BIN_DIR="$repo_dir/.venv/bin"
   export PATH="$repo_dir/.venv/bin:$PATH"
   run_logged "Installing pipx" timeout 900s .venv/bin/python -m pip install pipx
-  for package in certipy-ad bloodhound; do
+  for package in certipy-ad; do
     run_logged "Installing $package" timeout 900s .venv/bin/python -m pipx install --python "$repo_dir/.venv/bin/python" "$package"
   done
   run_logged "Installing NetExec" timeout 900s .venv/bin/python -m pipx install --python "$repo_dir/.venv/bin/python" "git+https://github.com/Pennyw0rth/NetExec.git@d640fb78b8f2cf25838405aa1ac615f3f27628db"
