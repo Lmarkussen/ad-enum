@@ -1,4 +1,5 @@
-from ldap3 import NTLM, SASL, GSSAPI, Connection, Server
+from ldap3 import NTLM, SASL, GSSAPI, Connection, Server, Tls
+from ldap3.core.exceptions import LDAPInvalidCredentialsResult, LDAPStrongerAuthRequiredResult
 import os
 import subprocess
 import tempfile
@@ -21,6 +22,10 @@ def _value(entry, key, default=None):
     return value
 
 
+class ProtectedLDAPError(Exception):
+    """Raised when a DC requires LDAP integrity but no protected transport worked."""
+
+
 class Collector:
     def __init__(self, host, username, password, domain, use_ssl=False, port=None, timeout=10, force_kerb=False):
         self.host, self.username, self.password, self.domain = host, username, password, domain
@@ -29,6 +34,10 @@ class Collector:
         self.timeout = timeout
         self.force_kerb = force_kerb
         self.kerberos_session = None
+        # Once a DC demands integrity the protected transport is remembered so
+        # later connections never retry the rejected plain track.
+        self._protection = None
+        self.negotiated_protection = None
 
     def _kerberos_env(self):
         if self.kerberos_session is None:
@@ -37,13 +46,68 @@ class Collector:
         return self.kerberos_session.ccache, {"KRB5CCNAME": self.kerberos_session.ccache,
                                                "KRB5_CONFIG": self.kerberos_session.krb5_config}, None
 
-    def _connection(self):
+    def _server(self, *, use_ssl=None, port=None, tls=None):
         server_host = socket.getfqdn(self.host) if self.force_kerb else self.host
-        server = Server(server_host, port=self.port, use_ssl=self.use_ssl, get_info=None, connect_timeout=self.timeout)
+        return Server(server_host, port=self.port if port is None else port,
+                      use_ssl=self.use_ssl if use_ssl is None else use_ssl,
+                      get_info=None, connect_timeout=self.timeout, tls=tls)
+
+    def _ntlm_bind(self, server, *, start_tls=False):
+        user = f"{self.domain}\\{self.username}" if self.domain else self.username
+        conn = Connection(server, user=user, password=self.password, authentication=NTLM,
+                          auto_bind=False, raise_exceptions=True)
+        if start_tls:
+            conn.open()
+            conn.start_tls()
+        conn.bind()
+        return conn
+
+    def _protected_bind(self, preferred=None):
+        """Retry the bind over a protected transport (StartTLS, then LDAPS).
+
+        ``Tls()`` keeps ldap3's existing default certificate handling; AD-Enum
+        neither adds nor removes verification here.
+        """
+        order = ([preferred] if preferred else
+                 [mode for mode in ("starttls", "ldaps")])
+        failures = []
+        for mode in order:
+            try:
+                if mode == "starttls":
+                    conn = self._ntlm_bind(self._server(tls=Tls()), start_tls=True)
+                else:
+                    conn = self._ntlm_bind(self._server(use_ssl=True, port=636, tls=Tls()))
+            except LDAPStrongerAuthRequiredResult:
+                failures.append(f"{mode}: strongerAuthRequired")
+                continue
+            except LDAPInvalidCredentialsResult:
+                # A protected bind rejecting the credentials is a genuine
+                # authentication answer, not a transport problem.
+                raise
+            except Exception as exc:  # transport/TLS failure on this mode
+                failures.append(f"{mode}: {type(exc).__name__}: "
+                                f"{self._scrub(str(exc))[:160]}")
+                continue
+            self._protection = mode
+            self.negotiated_protection = mode
+            return conn
+        raise ProtectedLDAPError(
+            "DC requires LDAP integrity and a protected LDAP connection could not be "
+            "established (" + "; ".join(failures) + ")")
+
+    def _scrub(self, text):
+        """Never let scanner secrets appear in diagnostics."""
+        for secret in (self.password,):
+            if secret:
+                text = text.replace(str(secret), "<redacted>")
+        return text
+
+    def _kerberos_connection(self):
         if not self.force_kerb:
-            user = f"{self.domain}\\{self.username}" if self.domain else self.username
-            return Connection(server, user=user, password=self.password, authentication=NTLM,
-                              auto_bind=True, raise_exceptions=True), None
+            raise RuntimeError("kerberos connection requested without force_kerb")
+        server_host = socket.getfqdn(self.host)
+        server = Server(server_host, port=self.port, use_ssl=self.use_ssl, get_info=None,
+                        connect_timeout=self.timeout)
         path, env, krb5_path = self._kerberos_env()
         previous = os.environ.get("KRB5CCNAME")
         previous_config = os.environ.get("KRB5_CONFIG")
@@ -60,6 +124,20 @@ class Collector:
             os.unlink(path); os.unlink(krb5_path)
             raise
         return conn, ("session", self.kerberos_session)
+
+    def _connection(self):
+        # Kerberos SASL/GSSAPI already negotiates an integrity-protected
+        # security layer, so it is used unchanged.
+        if self.force_kerb:
+            return self._kerberos_connection()
+        if self._protection is not None:
+            return self._protected_bind(self._protection), None
+        try:
+            return self._ntlm_bind(self._server()), None
+        except LDAPStrongerAuthRequiredResult:
+            # The DC requires LDAP signing/integrity; adapt rather than
+            # reporting the valid credentials as invalid.
+            return self._protected_bind(), None
 
     @staticmethod
     def _close(conn, kerberos_state):

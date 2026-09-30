@@ -46,6 +46,11 @@ Useful options include `--verbose`, `--debug`, `--tool-output`, `--no-color`, `-
 password on a command line can expose it through shell history or process
 inspection; omit `-p` to use the supported interactive prompt.
 
+Domain Controllers that require LDAP signing/integrity are handled
+automatically: the LDAP bind is retried over StartTLS (falling back to LDAPS),
+and a transport or security failure is reported distinctly from invalid
+credentials rather than being treated as a bad password.
+
 SCCM topology is discovered natively first, then corroborated and enriched by
 SCCMHunter's read-only `find` command. Every unique distribution point or site
 system in the merged topology is then validated through PXEThief; `--pxe-dp` is

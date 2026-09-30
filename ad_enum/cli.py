@@ -6,7 +6,7 @@ import shutil
 import socket
 import textwrap
 from importlib.resources import files
-from .ldap_collect import Collector
+from .ldap_collect import Collector, ProtectedLDAPError
 from .adcs import scan
 from .adapters.certipy import CertipyAdapter
 from .core.workspace import ScanWorkspace, canonical_domain
@@ -1254,6 +1254,9 @@ def main():
     try:
         console.activity("Resolving target...")
         root, _ = collector.preflight()
+        if getattr(collector, "negotiated_protection", None):
+            console.line(f"  LDAP integrity required; using protected LDAP "
+                         f"({collector.negotiated_protection})")
         resolved_name = target
         try:
             if ipaddress.ip_address(target):
@@ -1264,13 +1267,18 @@ def main():
             pass
         console.complete(f"Target resolved: {resolved_name}")
     except Exception as exc:
+        safe_exc = str(exc).replace(a.password, "<redacted>") if a.password else str(exc)
         failure = translate_kerberos_error(exc) if a.force_kerb else None
         if failure and failure.category != "bad-credentials":
             console.status(failure.message, "FAILED")
             if failure.hint: console.line(f"  {failure.hint}")
             if a.verbose: console.debug_line(f"Raw Kerberos error: {failure.raw}")
+        elif isinstance(exc, ProtectedLDAPError):
+            console.status("Credential check failed: DC requires LDAP integrity and a "
+                           "protected LDAP connection could not be established", "FAILED")
+            if a.verbose: console.debug_line(f"preflight failed: {safe_exc}")
         else:
-            message = str(exc).lower()
+            message = safe_exc.lower()
             if any(token in message for token in ("invalid credentials", "invalidcredential",
                                                   "logon failure", "bad password")):
                 console.status("Credentials Invalid", "INVALID")
@@ -1281,7 +1289,7 @@ def main():
                 console.status("Credential validation blocked by LDAP policy", "FAILED")
             else:
                 console.status("Credential validity could not be established", "FAILED")
-            if a.verbose: console.debug_line(f"preflight failed: {type(exc).__name__}: {exc}")
+            if a.verbose: console.debug_line(f"preflight failed: {type(exc).__name__}: {safe_exc}")
         return 2
     if not ipaddress.ip_address(a.domain) if False else False:
         pass
