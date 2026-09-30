@@ -14,6 +14,10 @@ provenance are retained in structured evidence and the credential artifacts;
 raw PXEThief stdout and intermediate crypto media stay under
 `SCCM/pxethief/raw/` and are never part of the console report.
 
+SCCMHunter discovery runs in an isolated `HOME` under `SCCM/sccmhunter/raw/`;
+its console output and discovery database stay there, and the normalized
+topology is merged into the native SCCM inventory.
+
 Module directories contain normalized inventory, findings, provenance, and
 source artifacts. `vulnerabilities/` contains active normalized findings, while
 `scans/<scan-id>/` retains completed historical output.

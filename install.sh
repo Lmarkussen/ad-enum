@@ -282,6 +282,30 @@ if [[ "$mode" != minimal ]]; then
     fail "PXEThief startup failed: dependency import check"
     exit 1
   fi
+  say "Installing SCCMHunter discovery/profiling adapter"
+  sccmhunter_root="$repo_dir/.cache/SCCMHunter"
+  sccmhunter_url="https://github.com/garrettfoster13/sccmhunter.git"
+  mkdir -p "$(dirname "$sccmhunter_root")"
+  if [[ -d "$sccmhunter_root/.git" ]] && git -C "$sccmhunter_root" remote get-url origin >/dev/null 2>&1; then
+    run_logged "Fetching SCCMHunter source" timeout 300s git -C "$sccmhunter_root" fetch origin
+    run_logged "Updating SCCMHunter source" timeout 300s git -C "$sccmhunter_root" merge --ff-only FETCH_HEAD
+  else
+    if [[ -e "$sccmhunter_root" ]]; then
+      warn "Removing incomplete installer-managed SCCMHunter checkout"
+      rm -rf -- "$sccmhunter_root"
+    fi
+    run_logged "Cloning SCCMHunter from public GitHub" timeout 300s git clone "$sccmhunter_url" "$sccmhunter_root"
+  fi
+  ok "SCCMHunter source available"
+  run_logged "Creating SCCMHunter environment" "$PYTHON_BIN" -m venv "$sccmhunter_root/.venv"
+  run_logged "Installing SCCMHunter dependencies" timeout 900s "$sccmhunter_root/.venv/bin/python" -m pip install -r "$sccmhunter_root/requirements.txt"
+  CURRENT_STAGE="Checking SCCMHunter startup"
+  if "$sccmhunter_root/.venv/bin/python" "$sccmhunter_root/sccmhunter.py" --help >/dev/null 2>&1; then
+    ok "SCCMHunter environment ready"
+  else
+    fail "SCCMHunter startup failed: sccmhunter.py --help"
+    exit 1
+  fi
 fi
 
 CURRENT_STAGE="Running AD-Enum doctor"

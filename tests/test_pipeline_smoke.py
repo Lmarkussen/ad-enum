@@ -19,6 +19,12 @@ class FakeCollector:
 
 def configure_pipeline(monkeypatch, tmp_path, sccm_discovery):
     monkeypatch.setattr(cli, "Collector", FakeCollector)
+    monkeypatch.setattr(cli, "run_sccmhunter", lambda *args, **kwargs: {
+        "status": "NOT TESTED", "source": "", "command": "", "commit": "",
+        "errors": ["fixture"], "site_codes": [], "management_points": [],
+        "distribution_points": [], "site_servers": []})
+    monkeypatch.setattr(cli, "sccmhunter_capability", lambda *args, **kwargs: {
+        "status": "NOT AVAILABLE", "detail": "fixture", "root": "", "commit": ""})
     monkeypatch.setattr(cli, "probe_anonymous_ldap", lambda *args, **kwargs: {
         "bind": "DENIED", "rootdse": "DENIED", "domain_data": "DENIED", "sources": ["test"]})
     monkeypatch.setattr(cli, "probe_anonymous_smb", lambda *args, **kwargs: {

@@ -11,8 +11,8 @@ operator does not have to search every tool's output directory.
 ## Features
 
 - AD inventory, AD CS, Kerberos, delegation, GPO/SYSVOL, ACL, SMB, LDAP, and domain security posture
-- SCCM/MECM and relay-exposure reconnaissance, including PXE-enabled
-  distribution-point validation through PXEThief
+- SCCM/MECM and relay-exposure reconnaissance, including SCCMHunter topology
+  corroboration and PXE-enabled distribution-point validation through PXEThief
 - DNS/host mapping and cross-source identity correlation
 - Discovered credential/secret evidence with protected scanner credentials
 - Current-scan-identity access checks and explicit coverage states
@@ -27,10 +27,11 @@ cd ad-enum
 ```
 
 The default install provisions all required scan tools, including NetworkHound,
-RelayKing, and PXEThief (pinned PR #11), and verifies them with credential-free
-startup checks. Tools stay under `.venv/` and `.cache/`; no PATH changes or
-second setup step are needed. Use `--verbose` for installer diagnostics.
-Packet-capture capabilities for PXEThief remain explicit and operator-managed.
+RelayKing, SCCMHunter, and PXEThief (pinned PR #11), and verifies them with
+credential-free startup checks. Tools stay under `.venv/` and `.cache/`; no PATH
+changes or second setup step are needed. Use `--verbose` for installer
+diagnostics. Packet-capture capabilities for PXEThief remain explicit and
+operator-managed.
 
 ## Quick start
 
@@ -44,11 +45,12 @@ Useful options include `--verbose`, `--debug`, `--tool-output`, `--no-color`, `-
 password on a command line can expose it through shell history or process
 inspection; omit `-p` to use the supported interactive prompt.
 
-When SCCM discovery identifies a distribution point or site system, PXE
-exposure is validated through PXEThief; `--pxe-dp` is only an explicit target
-override for debugging. PXEThief needs a suitable local Ethernet/broadcast path
-and packet-capture privileges, so a routed tunnel may be usable for LDAP/SMB
-while remaining unsuitable for PXE.
+SCCM topology is discovered natively first, then corroborated and enriched by
+SCCMHunter's read-only `find` command. Every unique distribution point or site
+system in the merged topology is then validated through PXEThief; `--pxe-dp` is
+only an explicit target override for debugging. PXEThief needs a suitable local
+Ethernet/broadcast path and packet-capture privileges, so a routed tunnel may be
+usable for LDAP/SMB while remaining unsuitable for PXE.
 
 Use `--html-out report.html` for an optional standalone browser-readable report.
 The default `results.txt` remains authoritative. `--tool-output` is an opt-in,

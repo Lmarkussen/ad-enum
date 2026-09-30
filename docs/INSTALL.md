@@ -3,10 +3,11 @@
 AD-Enum targets Linux with Python 3.11 or newer. The installer creates
 `.venv`, installs the project without system `pip`, installs the default
 external collectors through supported package mechanisms, and provisions the
-PXEThief SCCM/PXE validation tool. NetworkHound, RelayKing, and PXEThief are
-installed from public HTTPS source checkouts at tested revisions, with isolated
-environments under `.cache/`. Doctor verifies every required tool and returns a
-failure if one is missing or cannot start.
+`SCCMHunter` discovery tool and the PXEThief SCCM/PXE validation tool.
+NetworkHound, RelayKing, SCCMHunter, and PXEThief are installed from public
+HTTPS source checkouts at tested revisions, with isolated environments under
+`.cache/`. Doctor verifies every required tool and returns a failure if one is
+missing or cannot start.
 
 For a fresh checkout:
 

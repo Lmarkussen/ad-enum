@@ -19,7 +19,8 @@ from .external import execute_external
 from .inventory import (native_inventory, DomainInventory, build_targets, sensitive_description,
                         parse_netexec_smb, extract_attribute_secret, is_standard_admin_share)
 from .sccm import (discover as discover_sccm, normalize_relayking,
-                   probe_management_points, pxe_candidates)
+                   probe_management_points, pxe_candidates, merge_sccmhunter)
+from .sccmhunter_adapter import run_sccmhunter, sccmhunter_capability
 from .network import build_dns_map, dns_map_text, dns_map_host_count
 from .dns_enum import normalize_zones, normalize_records, merge_into_dns_map, normalize_password_settings
 from .gpo import normalize_gpos, collect_sysvol, collect_netlogon, inspect_file, parse_security_settings
@@ -76,6 +77,69 @@ def _networkhound_summary_lines(dns_map, *, map_reference="", indent="  "):
     if map_reference:
         fields.append(("DNS map", map_reference))
     return ["NetworkHound", *_compact_field_lines(fields, indent=indent)]
+
+
+_SCCM_SOURCE_LABELS = {"SCCM LDAP publication": "Native AD-Enum"}
+
+
+def _sccm_display_host(item, host_identities=None):
+    value = str(item.get("fqdn") or item.get("host") or item.get("name") or "").strip()
+    if not value:
+        return ""
+    return _canonical_host_display(value, host_identities) or value
+
+
+def _sccm_infrastructure_lines(result, *, host_identities=None, width=None, indent="  "):
+    """Render the compact SCCM estate summary without dumping tool output."""
+    result = result if isinstance(result, dict) else {}
+    site = str(result.get("site_code") or "").strip()
+    management_points = sorted({_sccm_display_host(item, host_identities)
+                                for item in result.get("management_points", []) or []} - {""})
+    distribution_points = sorted(
+        {(_sccm_display_host(item, host_identities), str(item.get("pxe", "")).upper() == "ENABLED")
+         for item in result.get("distribution_points", []) or [] if _sccm_display_host(item, host_identities)},
+        key=lambda pair: pair[0])
+    sms_providers = sorted({_sccm_display_host(item, host_identities)
+                            for item in result.get("sms_providers", []) or []} - {""})
+    sql_servers = sorted({_sccm_display_host(item, host_identities)
+                          for item in result.get("sql_servers", []) or []} - {""})
+    if not (site or management_points or distribution_points or sms_providers or sql_servers):
+        return []
+    sources = set()
+    if (result.get("publication") or {}).get("objects"):
+        sources.add("Native AD-Enum")
+    for role in ("management_points", "distribution_points", "site_servers"):
+        for item in result.get(role, []) or []:
+            for source in item.get("sources", []) or []:
+                sources.add(_SCCM_SOURCE_LABELS.get(source, source))
+    label_width = 16
+
+    def field(label, value):
+        return _compact_field_lines([(label, value)], indent=indent, width=width,
+                                    label_width=label_width)
+
+    lines = ["SCCM Infrastructure"]
+    lines.extend(field("Site", site or "UNKNOWN"))
+    if len(management_points) == 1:
+        lines.extend(field("Management Point", management_points[0]))
+    elif management_points:
+        lines.append(f"{indent}{'Management Points':<{label_width}}")
+        lines.extend(f"{indent}{'':<{label_width}}  {host}" for host in management_points)
+    if distribution_points:
+        lines.append(f"{indent}{'Distribution Point':<{label_width}}".rstrip())
+        host_width = max(len(host) for host, _ in distribution_points)
+        for host, pxe_enabled in distribution_points:
+            suffix = "PXE ENABLED" if pxe_enabled else ""
+            lines.append(f"{indent}  {host:<{host_width}}  {suffix}".rstrip())
+    if sms_providers:
+        lines.extend(field("SMS Provider", ", ".join(sms_providers)))
+    if sql_servers:
+        lines.extend(field("SQL", ", ".join(sql_servers)))
+    if sources:
+        ordered = [name for name in ("Native AD-Enum", "SCCMHunter") if name in sources]
+        ordered += sorted(sources - set(ordered))
+        lines.extend(field("Source", " + ".join(ordered)))
+    return lines
 
 
 def _write_networkhound_dns_map(workspace, dns_map):
@@ -1042,7 +1106,7 @@ def _smb_share_access_lines(shares, access_style=None):
 
 def _results_text(root, target, external_results, inventory, cas, templates, all_findings,
                   workspace, *, corroborated=0, disagreements=0, smb_shares=None, services=None,
-                  access_records=None, host_identities=None,
+                  access_records=None, host_identities=None, sccm=None,
                   networkhound_map_reference=""):
     lines = ["AD-Enum", "", "Target"]
     lines.extend(_compact_field_lines([
@@ -1068,6 +1132,9 @@ def _results_text(root, target, external_results, inventory, cas, templates, all
     lines.extend(_compact_field_lines(inventory_fields, indent="  "))
     lines.extend(["", *_networkhound_summary_lines(host_identities,
                                                      map_reference=networkhound_map_reference)])
+    sccm_lines = _sccm_infrastructure_lines(sccm, host_identities=host_identities)
+    if sccm_lines:
+        lines.extend(["", *sccm_lines])
     lines.extend(["", "Correlation", Console.field("Corroborated", corroborated),
                   Console.field("Disagreements", disagreements)])
     shares = smb_shares or []
@@ -1522,6 +1589,25 @@ def main():
             mp["endpoint_evidence"] = [{"scheme": x["scheme"], "path": x["path"],
                                          "http_status": x.get("http_status"), "metadata": x.get("metadata", {})}
                                         for x in confirmed]
+    # Native discovery runs first; SCCMHunter independently corroborates and
+    # enriches the topology before any PXE validation is scheduled.
+    console.activity("Corroborating SCCM topology with SCCMHunter...")
+    sccmhunter_result = run_sccmhunter(
+        workspace.domain, target, a.username, a.password,
+        timeout=min(max(a.timeout, 60), 300),
+        workdir=workspace.module_dir("SCCM") / "sccmhunter" / "raw", ldaps=a.ldaps)
+    sccmhunter_result["capability"] = sccmhunter_capability()["status"]
+    workspace.write_json(workspace.findings_path("SCCM", "sccmhunter.json"), sccmhunter_result)
+    merge_sccmhunter(sccm_result, sccmhunter_result)
+    if str(sccmhunter_result.get("status", "")).upper() == "PASS":
+        coverage.add("SCCM / SCCMHunter discovery", "PASS",
+                     f"{len(sccmhunter_result.get('management_points', []))} MP(s), "
+                     f"{len(sccmhunter_result.get('distribution_points', []))} PXE DP(s)")
+        console.complete("SCCMHunter discovery complete")
+    else:
+        coverage.add("SCCM / SCCMHunter discovery", "NOT TESTED",
+                     (sccmhunter_result.get("errors") or ["unavailable"])[0])
+        console.complete("SCCMHunter discovery unavailable — skipped", "SKIPPED")
     workspace.write_json(workspace.findings_path("SCCM", "inventory.json"), sccm_result)
     workspace.write_json(workspace.findings_path("SCCM", "topology.json"),
                          sccm_result.get("topology", {}))
@@ -2170,6 +2256,7 @@ def main():
                                 workspace, corroborated=len(statuses), disagreements=len(disagreements),
                                 smb_shares=share_inventory, services=service_inventory,
                                 access_records=access_records, host_identities=dns_map,
+                                sccm=sccm_result,
                                 networkhound_map_reference=networkhound_map_reference)
     workspace.write_text_atomic(workspace.root / "results.txt", report_text)
     # Keep a non-destructive historical copy for this scan ID.
@@ -2257,6 +2344,12 @@ def main():
     console.heading(networkhound_lines[0])
     for line in networkhound_lines[1:]:
         console.line(line)
+    sccm_lines = _sccm_infrastructure_lines(sccm_result, host_identities=dns_map)
+    if sccm_lines:
+        console.line()
+        console.heading(sccm_lines[0])
+        for line in sccm_lines[1:]:
+            console.line(line)
     if share_inventory:
         console.line()
         console.heading("SMB Share Access")

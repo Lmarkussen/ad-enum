@@ -269,6 +269,76 @@ def pxe_candidates(result, host_identities=None):
     return sorted(candidates, key=lambda c: (c["site_code"], c["dp"].casefold()))
 
 
+def _sccm_host(value):
+    if isinstance(value, dict):
+        value = value.get("fqdn") or value.get("host") or value.get("name")
+    return str(value or "").strip().casefold()
+
+
+def merge_sccmhunter(result, hunter):
+    """Merge SCCMHunter ``find`` results into the native SCCM topology.
+
+    Hosts already known from native LDAP keep their evidence and gain
+    ``SCCMHunter`` in their source list; hosts only SCCMHunter observed are
+    added with truthful SCCMHunter-only attribution.  Neither source is
+    overwritten, so a disagreement between them remains visible.
+    """
+    result = result if isinstance(result, dict) else {}
+    if not isinstance(hunter, dict) or str(hunter.get("status", "")).upper() != "PASS":
+        return result
+
+    def note_source(entry):
+        sources = entry.setdefault("sources", [])
+        # Entries that already existed came from native discovery.
+        if not sources:
+            sources.append("Native AD-Enum")
+        if "SCCMHunter" not in sources:
+            sources.append("SCCMHunter")
+
+    default_site = (result.get("site_code")
+                    or next(iter(hunter.get("site_codes") or []), ""))
+    for role, additions, defaults in (
+            ("management_points", hunter.get("management_points"), {}),
+            ("site_servers", hunter.get("site_servers"), {}),
+            ("distribution_points", hunter.get("distribution_points"), {"pxe": "ENABLED"})):
+        entries = result.setdefault(role, [])
+        by_host = {_sccm_host(item): item for item in entries if _sccm_host(item)}
+        for addition in additions or []:
+            host = _sccm_host(addition)
+            if not host:
+                continue
+            existing = by_host.get(host)
+            if existing is not None:
+                note_source(existing)
+                for key, value in defaults.items():
+                    existing.setdefault(key, value)
+                continue
+            entry = {"host": host, "fqdn": host, "ip_addresses": [],
+                     "site_code": addition.get("site_code") or default_site,
+                     "confidence": "sccmhunter", "sources": ["SCCMHunter"],
+                     "evidence": "SCCMHunter find"}
+            entry.update(defaults)
+            entries.append(entry)
+            by_host[host] = entry
+
+    if hunter.get("site_codes") and not result.get("site_code"):
+        result["site_code"] = hunter["site_codes"][0]
+
+    pxe = result.get("pxe") if isinstance(result.get("pxe"), dict) else {}
+    if hunter.get("distribution_points"):
+        if str(pxe.get("status", "UNKNOWN")).upper() != "ENABLED":
+            pxe.update({"status": "ENABLED", "state": "ENABLED",
+                        "implementation": pxe.get("implementation", "unknown")})
+        pxe.setdefault("evidence", []).append(
+            {"source": "SCCMHunter", "attribute": "netbootServer",
+             "hosts": sorted({item["host"] for item in hunter["distribution_points"]})})
+        sources = pxe.setdefault("sources", [])
+        if "SCCMHunter" not in sources:
+            sources.append("SCCMHunter")
+        result["pxe"] = pxe
+    return result
+
+
 def normalize_relayking(data):
     """Keep RelayKing's structured exposure/path results without executing them."""
     if not isinstance(data, dict):

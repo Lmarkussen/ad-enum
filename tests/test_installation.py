@@ -61,12 +61,14 @@ def test_doctor_checks_required_options_and_timeout(monkeypatch):
 def test_doctor_required_visibility_and_exit(monkeypatch, capsys, missing):
     monkeypatch.setattr(doctor, "find_executable", lambda name: None if name == missing else "/tool")
     monkeypatch.setattr(doctor, "pxethief_capability", lambda: {"status": "PASS", "detail": "fixture"})
+    monkeypatch.setattr(doctor, "sccmhunter_capability", lambda: {"status": "PASS", "detail": "fixture"})
     monkeypatch.setattr(doctor.importlib.util, "find_spec", lambda _: True)
     monkeypatch.setattr(doctor.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(
         a, 0, " ".join(flag for _, _, _, flags in doctor.REQUIRED_TOOLS for flag in flags), ""))
     assert doctor.report() == (1 if missing else 0)
     output = capsys.readouterr().out
-    assert "NetworkHound" in output and "RelayKing" in output and "PXEThief" in output
+    assert "NetworkHound" in output and "RelayKing" in output
+    assert "PXEThief" in output and "SCCMHunter" in output
     if missing:
         assert "NOT AVAILABLE" in output and "default installation is incomplete" in output
 
