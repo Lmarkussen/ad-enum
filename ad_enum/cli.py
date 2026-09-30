@@ -17,7 +17,7 @@ from .core.planner import ExecutionPlanner
 from .core.findings import NormalizedFinding
 from .external import execute_external
 from .inventory import (native_inventory, DomainInventory, build_targets, sensitive_description,
-                        parse_netexec_smb, extract_attribute_secret, is_standard_admin_share)
+                        parse_netexec_smb, extract_attribute_secret, is_standard_admin_share, _first)
 from .sccm import (discover as discover_sccm, normalize_relayking,
                    probe_management_points, pxe_candidates, dp_candidates, merge_sccmhunter)
 from .sccmhunter_adapter import run_sccmhunter, sccmhunter_capability
@@ -1182,6 +1182,17 @@ def _results_text(root, target, external_results, inventory, cas, templates, all
     return "\n".join(lines)
 
 
+def _privileged_group_entries(inventory, names):
+    """Return privileged groups, unwrapping LDAP's single-element list values."""
+    entries = []
+    for record in inventory.records.get("groups", {}).values():
+        name = (_first(record.attributes.get("sAMAccountName"))
+                or _first(record.attributes.get("name")) or record.identifier)
+        if str(name).lower() in names:
+            entries.append({"name": name, "sid": record.identifier, "sources": record.sources})
+    return entries
+
+
 def _build_parser():
     p = argparse.ArgumentParser(description="Enumerate AD CS and explain ESC1 candidates")
     p.add_argument("-dc-ip", "--dc-ip", "-dc", "--dc", dest="dc", metavar="DC_IP",
@@ -1946,10 +1957,7 @@ def main():
     privileged_names = {"domain admins", "enterprise admins", "administrators", "schema admins",
                         "account operators", "server operators", "backup operators", "dnsadmins",
                         "group policy creator owners"}
-    privileged_groups = [{"name": r.attributes.get("sAMAccountName") or r.attributes.get("name") or r.identifier,
-                          "sid": r.identifier, "sources": r.sources}
-                         for r in inventory.records.get("groups", {}).values()
-                         if str(r.attributes.get("sAMAccountName") or r.attributes.get("name") or "").lower() in privileged_names]
+    privileged_groups = _privileged_group_entries(inventory, privileged_names)
     workspace.write_json(workspace.findings_path("ACL", "privileged-groups.json"), privileged_groups)
     workspace.write_json(workspace.findings_path("ACL", "inventory.json"),
                          {"gpo_acls": gpo_acls, "high_value_acls": high_value_acls})

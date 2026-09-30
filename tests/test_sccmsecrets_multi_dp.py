@@ -167,3 +167,31 @@ def test_recovered_credential_dedupe_preserves_multiple_sources(monkeypatch, tmp
     assert len(matching) == 1
     assert matching[0]["sources"] == ["PXEThief", "SCCMSecrets"]
     assert len(matching[0]["contexts"]) == 2
+
+
+def test_credential_dedupe_keeps_distinct_accounts_and_passwords_separate(monkeypatch, tmp_path):
+    entries = _dps(("192.0.2.21",))
+    calls = []
+    dp_credentials = [
+        {"type": "SCCM DP file password", "name": "password", "username": "svc-naa",
+         "value": "SharedSecret", "path": "loot/packages/Join.ps1"},
+        {"type": "SCCM DP file password", "name": "password", "username": "svc-naa",
+         "value": "OtherSecret", "path": "loot/packages/Other.ps1"},
+        {"type": "SCCM DP file password", "name": "password", "username": "svc-other",
+         "value": "SharedSecret", "path": "loot/packages/Third.ps1"},
+    ]
+    _configure(monkeypatch, tmp_path, entries,
+               {"192.0.2.21": _ok(interesting=3, credentials=dp_credentials)}, calls,
+               pxethief_recovered=[{"name": "NetworkAccessAccount", "username": "svc-naa",
+                                    "value": "SharedSecret"}])
+
+    assert cli.main() == 0
+    credentials = json.loads((tmp_path / "sccm.lab" / "credentials.json").read_text())
+
+    keys = {(entry["account"].casefold(), entry["value"]) for entry in credentials}
+    assert keys == {("svc-naa", "SharedSecret"), ("svc-naa", "OtherSecret"),
+                    ("svc-other", "SharedSecret")}
+    shared = next(e for e in credentials
+                  if e["account"].casefold() == "svc-naa" and e["value"] == "SharedSecret")
+    # Same account + same value merges provenance; the other two stay separate.
+    assert shared["sources"] == ["PXEThief", "SCCMSecrets"]

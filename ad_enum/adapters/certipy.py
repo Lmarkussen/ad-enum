@@ -340,7 +340,8 @@ class CertipyAdapter(ToolAdapter):
             candidates.extend(Path(td).parent.glob("*Certipy.json"))
             output = next((p for p in candidates if p.exists()), None)
             if proc.returncode != 0 or output is None:
-                raise RuntimeError(f"Certipy JSON collection failed ({proc.returncode}): {proc.stderr[-500:]}")
+                detail = self.redact_text(proc.stderr[-500:], ((password,) if password else ()))
+                raise RuntimeError(f"Certipy JSON collection failed ({proc.returncode}): {detail}")
             snapshot = self.from_json(output)
             self._merge_text_data(snapshot, self.from_text(proc.stdout))
             safe_cmd = ["<password>" if password is not None and part == password else part for part in cmd]

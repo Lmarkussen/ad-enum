@@ -83,5 +83,8 @@ class ToolAdapter:
         result = subprocess.CompletedProcess(command, proc.returncode,
                                              "".join(captured["stdout"]), "".join(captured["stderr"]))
         if result.returncode:
-            raise RuntimeError(f"{self.source_name} exited {result.returncode}: {result.stderr[-500:]}")
+            # The message is persisted (failure.json / coverage), so it must not
+            # carry scanner secrets a tool may have echoed to stderr.
+            detail = self.redact_text(result.stderr[-500:], secrets)
+            raise RuntimeError(f"{self.source_name} exited {result.returncode}: {detail}")
         return result

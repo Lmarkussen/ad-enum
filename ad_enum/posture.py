@@ -168,7 +168,7 @@ def _principal_is_low_priv(sid, inventory, maps, seen=None):
     record = maps.get(sid.lower())
     if not record:
         return False, "unknown"
-    name = str(record.attributes.get("sAMAccountName") or record.attributes.get("name") or "").lower()
+    name = str(_one(record.attributes.get("sAMAccountName")) or _one(record.attributes.get("name")) or "").lower()
     privileged = {"domain admins", "enterprise admins", "administrators", "schema admins",
                   "account operators", "server operators", "backup operators", "dnsadmins",
                   "group policy creator owners", "domain controllers", "cert publishers"}
