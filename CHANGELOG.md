@@ -1,3 +1,58 @@
+# AD-Enum v1.0.3
+
+Patch release focused on recovered-credential visibility, hardened-LDAP
+compatibility for LDAPDomainDump, and clearer PXE privilege handling.
+
+## Recovered credentials
+
+- Recovered target credentials are now shown directly in normal operator output
+  instead of being hidden behind a generic `Recovered N` count.
+- Target credentials continue to be written to `credentials.txt` and
+  `credentials.json`. Human output is bounded for large sets while the complete
+  credential artifacts retain every finding.
+- Scanner/operator credentials remain redacted and are never intentionally
+  surfaced.
+
+## SCCM / OSD credentials
+
+- PXEThief task-sequence variables are correlated into meaningful credentials:
+  - `OSDJoinAccount` + `OSDJoinPassword` -> Domain Join Credential
+  - `OSDLocalAdminPassword` -> Local Administrator Password
+  - `NetworkAccessAccount` remains a paired account/password credential
+  - `OSDRegisteredUserName` is shown as deployment metadata, not a credential
+- Original PXE variable names remain preserved in structured evidence and
+  provenance.
+- Credential artifacts now use the real domain-join account instead of
+  `UNKNOWN` when the account/password pair is available.
+
+## LDAPDomainDump
+
+- LDAPDomainDump now automatically uses `ldaps://` when AD-Enum has already
+  negotiated protected LDAP against a hardened DC.
+- `strongerAuthRequired` no longer results in a generic unexplained
+  LDAPDomainDump failure. External-tool failures surface concise reasons such
+  as protected LDAP required, TLS failure, authentication rejected, or
+  MD4 / missing-module dependency errors.
+- Scanner-password redaction remains intact.
+
+## PXE privilege UX
+
+- AD-Enum now warns near startup when the current process lacks the raw-socket
+  privilege PXEThief needs.
+- Normal AD-Enum operation does not generally require root. SCCM PXE validation
+  requires `root` or effective `CAP_NET_RAW` (`CAP_NET_ADMIN` is not required).
+- Without that privilege all other checks continue normally and PXE validation
+  is reported `NOT TESTED`. No automatic sudo, `setcap`, or persistent
+  capability changes are introduced.
+
+## Validation
+
+- 369 automated tests pass.
+- Live validation confirmed protected LDAP / StartTLS, LDAPDomainDump via
+  LDAPS, SCCMHunter auto-LDAPS, PXEThief with temporary `CAP_NET_RAW`,
+  SCCMSecrets DP indexing, semantic OSD credential correlation, and
+  scanner-secret containment.
+
 # AD-Enum v1.0.2
 
 Correctness and reliability release: hardened-LDAP compatibility, an SCCM
