@@ -1629,10 +1629,15 @@ def main():
     # Native discovery runs first; SCCMHunter independently corroborates and
     # enriches the topology before any PXE validation is scheduled.
     console.activity("Corroborating SCCM topology with SCCMHunter...")
+    # SCCMHunter has its own LDAP stack: when native LDAP had to fall back to a
+    # protected transport (the DC requires signing/integrity), select its
+    # supported protected path instead of letting it fail over plain LDAP.
+    protected_ldap = bool(getattr(collector, "negotiated_protection", None))
     sccmhunter_result = run_sccmhunter(
         workspace.domain, target, a.username, a.password,
         timeout=min(max(a.timeout, 60), 300),
-        workdir=workspace.module_dir("SCCM") / "sccmhunter" / "raw", ldaps=a.ldaps)
+        workdir=workspace.module_dir("SCCM") / "sccmhunter" / "raw",
+        ldaps=a.ldaps or protected_ldap)
     sccmhunter_result["capability"] = sccmhunter_capability()["status"]
     workspace.write_json(workspace.findings_path("SCCM", "sccmhunter.json"), sccmhunter_result)
     merge_sccmhunter(sccm_result, sccmhunter_result)
