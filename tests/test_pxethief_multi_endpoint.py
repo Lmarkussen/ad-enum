@@ -42,6 +42,12 @@ def _configure(monkeypatch, tmp_path, sccm_result, states, calls, *,
         "distribution_points": [], "site_servers": []})
     monkeypatch.setattr(cli, "sccmhunter_capability", lambda *a, **k: {
         "status": "NOT AVAILABLE", "detail": "fixture", "root": "", "commit": ""})
+    monkeypatch.setattr(cli, "run_sccmsecrets_files", lambda dp, *a, **k: {
+        "dp": str(dp), "state": "NOT TESTED", "access": "UNKNOWN", "indexed": 0,
+        "downloaded": 0, "interesting": 0, "files": [], "credentials": [],
+        "errors": ["fixture"], "source": "", "command": ""})
+    monkeypatch.setattr(cli, "sccmsecrets_capability", lambda *a, **k: {
+        "status": "NOT AVAILABLE", "detail": "fixture", "root": "", "commit": ""})
     if dns_map is not None:
         monkeypatch.setattr(cli, "build_dns_map", lambda *a, **k: dns_map)
         monkeypatch.setattr(cli, "dns_map_text", lambda *a, **k: "")

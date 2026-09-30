@@ -12,7 +12,8 @@ operator does not have to search every tool's output directory.
 
 - AD inventory, AD CS, Kerberos, delegation, GPO/SYSVOL, ACL, SMB, LDAP, and domain security posture
 - SCCM/MECM and relay-exposure reconnaissance, including SCCMHunter topology
-  corroboration and PXE-enabled distribution-point validation through PXEThief
+  corroboration, PXE-enabled distribution-point validation through PXEThief,
+  and read-only Distribution Point content inspection through SCCMSecrets
 - DNS/host mapping and cross-source identity correlation
 - Discovered credential/secret evidence with protected scanner credentials
 - Current-scan-identity access checks and explicit coverage states
@@ -27,11 +28,11 @@ cd ad-enum
 ```
 
 The default install provisions all required scan tools, including NetworkHound,
-RelayKing, SCCMHunter, and PXEThief (pinned PR #11), and verifies them with
-credential-free startup checks. Tools stay under `.venv/` and `.cache/`; no PATH
-changes or second setup step are needed. Use `--verbose` for installer
-diagnostics. Packet-capture capabilities for PXEThief remain explicit and
-operator-managed.
+RelayKing, SCCMHunter, SCCMSecrets, and PXEThief (pinned PR #11), and verifies
+them with credential-free startup checks. Tools stay under `.venv/` and
+`.cache/`; no PATH changes or second setup step are needed. Use `--verbose` for
+installer diagnostics. Packet-capture capabilities for PXEThief remain explicit
+and operator-managed.
 
 ## Quick start
 
@@ -51,6 +52,11 @@ system in the merged topology is then validated through PXEThief; `--pxe-dp` is
 only an explicit target override for debugging. PXEThief needs a suitable local
 Ethernet/broadcast path and packet-capture privileges, so a routed tunnel may be
 usable for LDAP/SMB while remaining unsuitable for PXE.
+
+Each unique Distribution Point is then indexed with SCCMSecrets in read-only
+`files` mode, retrieving a bounded set of text/configuration formats. AD-Enum
+never runs SCCMSecrets `policies` automatically, because that mode registers a
+new SCCM device.
 
 Use `--html-out report.html` for an optional standalone browser-readable report.
 The default `results.txt` remains authoritative. `--tool-output` is an opt-in,

@@ -18,6 +18,10 @@ SCCMHunter discovery runs in an isolated `HOME` under `SCCM/sccmhunter/raw/`;
 its console output and discovery database stay there, and the normalized
 topology is merged into the native SCCM inventory.
 
+SCCMSecrets run only in read-only `files` mode. Each Distribution Point gets an
+isolated `SCCM/sccmsecrets/raw/<dp>/` workspace holding its `loot/` index and
+retrieved files; the normalized per-DP summary is `SCCM/dp-content.json`.
+
 Module directories contain normalized inventory, findings, provenance, and
 source artifacts. `vulnerabilities/` contains active normalized findings, while
 `scans/<scan-id>/` retains completed historical output.

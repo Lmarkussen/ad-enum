@@ -19,8 +19,9 @@ from .external import execute_external
 from .inventory import (native_inventory, DomainInventory, build_targets, sensitive_description,
                         parse_netexec_smb, extract_attribute_secret, is_standard_admin_share)
 from .sccm import (discover as discover_sccm, normalize_relayking,
-                   probe_management_points, pxe_candidates, merge_sccmhunter)
+                   probe_management_points, pxe_candidates, dp_candidates, merge_sccmhunter)
 from .sccmhunter_adapter import run_sccmhunter, sccmhunter_capability
+from .sccmsecrets_adapter import run_files as run_sccmsecrets_files, sccmsecrets_capability
 from .network import build_dns_map, dns_map_text, dns_map_host_count
 from .dns_enum import normalize_zones, normalize_records, merge_into_dns_map, normalize_password_settings
 from .gpo import normalize_gpos, collect_sysvol, collect_netlogon, inspect_file, parse_security_settings
@@ -740,13 +741,14 @@ def _relay_finding_lines(items, *, title_style=None, host_identities=None, width
 def _sccm_finding_lines(items, *, title_style=None, host_identities=None, width=None,
                         inventory=None, secret_style=None, direct_style=None):
     pxe = [item for item in items if item.get("rule") == "PXE"]
-    remaining = [item for item in items if item not in pxe]
+    dp_content = [item for item in items if item.get("rule") == "DP-content"]
+    remaining = [item for item in items if item not in pxe and item not in dp_content]
     lines = []
-    ordered = sorted(pxe, key=lambda item: (
+    order = lambda item: (
         str((item.get("evidence", {}) or {}).get("site", "")).casefold(),
         str((item.get("evidence", {}) or {}).get("dp")
-            or item.get("affected_object", "")).casefold()))
-    for item in ordered:
+            or item.get("affected_object", "")).casefold())
+    for item in sorted(pxe, key=order):
         if lines:
             lines.append("")
         evidence = item.get("evidence", {}) or {}
@@ -764,6 +766,33 @@ def _sccm_finding_lines(items, *, title_style=None, host_identities=None, width=
             fields.append(("Reason", evidence["reason"]))
         if evidence.get("recovered_count"):
             fields.append(("Recovered", evidence["recovered_count"]))
+        if evidence.get("source"):
+            fields.append(("Source", evidence["source"]))
+        if fields:
+            lines.extend(_compact_field_lines(fields, indent="    ", width=width))
+    for item in sorted(dp_content, key=order):
+        if lines:
+            lines.append("")
+        evidence = item.get("evidence", {}) or {}
+        lines.append(_styled_finding_heading(_finding_title(item, inventory, host_identities), title_style))
+        fields = []
+        dp = evidence.get("dp") or item.get("affected_object")
+        if dp not in (None, ""):
+            fields.append(("DP", _canonical_host_display(dp, host_identities)))
+        if evidence.get("site") not in (None, ""):
+            fields.append(("Site", evidence["site"]))
+        if evidence.get("access") not in (None, "", "UNKNOWN"):
+            fields.append(("Access", evidence["access"]))
+        state = str(evidence.get("state", "")).upper()
+        if state and state != "ACCESSIBLE":
+            fields.append(("State", state))
+        for label, key in (("Indexed", "indexed"), ("Interesting", "interesting"),
+                           ("Credentials", "credential_count")):
+            value = evidence.get(key)
+            if value:
+                fields.append((label, value))
+        if evidence.get("reason"):
+            fields.append(("Reason", evidence["reason"]))
         if evidence.get("source"):
             fields.append(("Source", evidence["source"]))
         if fields:
@@ -1614,8 +1643,6 @@ def main():
     workspace.write_json(workspace.raw_dir("SCCM") / "ldap-publication.json", collector.raw.get("sccm", []))
     workspace.write_json(workspace.findings_path("SCCM", "endpoints.json"), sccm_result.get("endpoint_probes", []))
     workspace.write_json(workspace.findings_path("SCCM", "pxe.json"), sccm_result.get("pxe", {}))
-    workspace.write_json(workspace.findings_path("SCCM", "dp-content.json"),
-                         sccm_result.get("dp_content", []))
     workspace.write_json(workspace.findings_path("SCCM", "task-sequences.json"),
                          sccm_result.get("task_sequences", []))
     pxe_tool = pxethief_capability()
@@ -1674,6 +1701,51 @@ def main():
     else:
         coverage.add("SCCM / PXE validation", "NOT TESTED",
                      "no PXE-enabled distribution point discovered")
+    # SCCMSecrets indexes the file content of every unique Distribution Point.
+    # Only the read-only ``files`` mode is used; AD-Enum never registers devices.
+    dp_targets = dp_candidates(sccm_result, dns_map)
+    dp_results = []
+    if dp_targets:
+        console.activity(f"Inspecting SCCM Distribution Point content ({len(dp_targets)} endpoint(s))...")
+        used_dirs = set()
+        for index, candidate in enumerate(dp_targets, start=1):
+            try:
+                if sccmsecrets_capability()["status"] != "PASS":
+                    dp_results.append({"dp": candidate["dp"],
+                                       "site_code": candidate.get("site_code", ""),
+                                       "state": "NOT TESTED", "source": "",
+                                       "errors": ["SCCMSecrets unavailable"]})
+                    continue
+                safe_dp = re.sub(r"[^A-Za-z0-9._-]", "_", str(candidate["dp"])) or "dp"
+                if safe_dp in used_dirs:
+                    safe_dp = f"{safe_dp}.{index}"
+                used_dirs.add(safe_dp)
+                workdir = workspace.module_dir("SCCM") / "sccmsecrets" / "raw" / safe_dp
+                result = run_sccmsecrets_files(
+                    candidate["dp"], a.username, a.password,
+                    timeout=min(max(a.timeout, 120), 600), workdir=workdir)
+                result["site_code"] = result.get("site_code") or candidate.get("site_code", "")
+                result["basis"] = candidate.get("basis", "")
+                result["credential_count"] = len(result.get("credentials", []) or [])
+                dp_results.append(result)
+            except Exception as exc:
+                # One Distribution Point must never abort the others.
+                dp_results.append({"dp": candidate.get("dp", "unknown"),
+                                   "site_code": candidate.get("site_code", ""),
+                                   "state": "NOT TESTED", "source": "",
+                                   "errors": [f"{type(exc).__name__}: {exc}"]})
+        workspace.write_json(workspace.findings_path("SCCM", "dp-content.json"), dp_results)
+        accessible = [x for x in dp_results if str(x.get("state", "")).upper() == "ACCESSIBLE"]
+        if accessible:
+            coverage.add("SCCM / DP content inspection", "PASS",
+                         f"{len(accessible)} of {len(dp_results)} Distribution Point(s) indexed")
+        else:
+            coverage.add("SCCM / DP content inspection", "PARTIAL",
+                         f"0 of {len(dp_results)} Distribution Point(s) indexed")
+        console.complete("SCCM Distribution Point content inspection complete")
+    else:
+        coverage.add("SCCM / DP content inspection", "NOT TESTED",
+                     "no Distribution Point discovered")
     coverage.add("SCCM / infrastructure discovery", "PASS", f"{len(sccm_result.get('hosts', []))} candidate host(s)")
     # Keep SCCM coverage granular: the aggregate line describes the
     # discovery family only and must not imply that every role is observable.
@@ -2086,37 +2158,80 @@ def main():
             priority="high" if state == "VULNERABLE" else "medium",
             workspace_artifacts=["SCCM/pxe-validation.json"],
             first_seen_scan=workspace.scan_id, current_scan=workspace.scan_id).as_dict())
-    seen_credentials = set()
+    dp_findings = []
+    for result in dp_results:
+        state = str(result.get("state", "NOT TESTED")).upper()
+        dp = result.get("dp") or "unknown"
+        credentials = list(result.get("credentials", []) or [])
+        source = result.get("source", "") or ""
+        display_dp = _canonical_host_display(dp, dns_map)
+        dp_findings.append(NormalizedFinding(
+            finding_id=f"sccm-dp:{dp}", category="SCCM", rule="DP-content",
+            title=f"DP CONTENT — {display_dp}", affected_object=dp, domain=workspace.domain,
+            sources=[{"source": "SCCMSecrets", "observed": True}] if source else [],
+            evidence={"dp": dp, "site": result.get("site_code", ""), "state": state,
+                      "access": result.get("access", "UNKNOWN"),
+                      "indexed": result.get("indexed", 0),
+                      "downloaded": result.get("downloaded", 0),
+                      "interesting": result.get("interesting", 0),
+                      "credential_count": len(credentials), "credentials": credentials,
+                      "source": source, "reason": (result.get("errors") or [""])[0],
+                      "errors": list(result.get("errors", []) or [])},
+            status=("confirmed" if credentials else
+                    "single-source" if state == "ACCESSIBLE" else "informational"),
+            priority="high" if credentials else "medium",
+            workspace_artifacts=["SCCM/dp-content.json"],
+            first_seen_scan=workspace.scan_id, current_scan=workspace.scan_id).as_dict())
+
+    credential_index = {}
+
+    def add_credential(*, account, value, kind, source, context):
+        """Deduplicate by value while preserving every provenance source."""
+        key = (str(account or "UNKNOWN").casefold(), str(value))
+        existing = credential_index.get(key)
+        if existing is not None:
+            if source and source not in existing["sources"]:
+                existing["sources"].append(source)
+            if context and context not in existing["contexts"]:
+                existing["contexts"].append(context)
+            existing["source"] = " + ".join(existing["sources"]) or existing["source"]
+            existing["context"] = "; ".join(existing["contexts"]) or existing["context"]
+            return
+        entry = {"account": account or "UNKNOWN", "value": value,
+                 "type": kind or "credential", "source": source or "",
+                 "context": context or "",
+                 "sources": [source] if source else [],
+                 "contexts": [context] if context else []}
+        credential_index[key] = entry
+        discovered_credentials.append(entry)
+
     for item in gpo_findings + ldap_secret_findings:
         value = item.get("evidence", {}).get("value")
         if not value:
             continue
         evidence = item.get("evidence", {})
-        account = item.get("account") or evidence.get("username") or item.get("affected_object", "")
-        key = (str(account).lower(), str(value), item.get("rule"))
-        if key in seen_credentials:
-            continue
-        seen_credentials.add(key)
-        discovered_credentials.append({"account": account or "UNKNOWN", "value": value,
-                                       "type": evidence.get("type", item.get("rule")),
-                                       "source": item.get("file") or evidence.get("attribute"),
-                                       "context": item.get("gpo", {}).get("display_name") or item.get("title")})
+        add_credential(account=item.get("account") or evidence.get("username") or item.get("affected_object", ""),
+                       value=value, kind=evidence.get("type", item.get("rule")),
+                       source=item.get("file") or evidence.get("attribute"),
+                       context=item.get("gpo", {}).get("display_name") or item.get("title"))
     for item in pxe_findings:
         evidence = item["evidence"]
         for secret in evidence.get("recovered", []) or []:
-            value = secret.get("value")
-            if not value:
+            if not secret.get("value"):
                 continue
-            account = secret.get("username") or secret.get("name") or "UNKNOWN"
-            key = (str(account).lower(), str(value), "PXE")
-            if key in seen_credentials:
+            add_credential(account=secret.get("username") or secret.get("name"), value=secret["value"],
+                           kind=secret.get("name") or "PXE media credential",
+                           source=evidence.get("source") or "PXEThief",
+                           context=f"PXE media — {evidence.get('dp', '')}")
+    for item in dp_findings:
+        evidence = item["evidence"]
+        for secret in evidence.get("credentials", []) or []:
+            if not secret.get("value"):
                 continue
-            seen_credentials.add(key)
-            discovered_credentials.append(
-                {"account": account, "value": value,
-                 "type": secret.get("name") or "PXE media credential",
-                 "source": evidence.get("source") or "PXEThief",
-                 "context": f"PXE media — {evidence.get('dp', '')}"})
+            add_credential(account=secret.get("username") or secret.get("name"), value=secret["value"],
+                           kind=secret.get("type") or "SCCM DP file secret",
+                           source="SCCMSecrets",
+                           context=f"SCCM DP {evidence.get('dp', '')} — {secret.get('path', '')}")
     workspace.write_json(workspace.root / "credentials.json", discovered_credentials)
     workspace.write_text(workspace.root / "credentials.txt", "\n\n".join(
         f"Credential exposure — {x['context']}\n  Account: {x['account']}\n"
@@ -2199,7 +2314,7 @@ def main():
     active_kerberos_findings = [x for x in kerberos_findings
                                 if not (x.get("rule") == "Kerberoastable-account"
                                         and x.get("evidence", {}).get("enabled") is False)]
-    all_findings = (finding_records + policy_findings + description_findings + ldap_secret_findings + pxe_findings + active_kerberos_findings +
+    all_findings = (finding_records + policy_findings + description_findings + ldap_secret_findings + pxe_findings + dp_findings + active_kerberos_findings +
                     domain_security_findings +
                     delegation_findings + relay_findings + smb_findings + acl_findings +
                     ldap_security_findings + anonymous_smb_findings + [x["normalized"] for x in gpo_findings])

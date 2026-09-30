@@ -230,23 +230,29 @@ def _resolved_hostnames(dns_map):
     return index
 
 
-def pxe_candidates(result, host_identities=None):
-    """Return deterministic PXE/DP candidates from SCCM discovery.
+def _canonical_candidates(observed, host_identities, *, pxe_state=""):
+    """Canonicalize discovered endpoints, collapsing duplicate identities.
 
-    SCCM commonly co-locates the management point, distribution point, and
-    PXE/WDS role on a single site system, and the passive netboot SCP
-    attributes are not always published.  Candidates are therefore drawn from
-    discovered distribution points first and then from confirmed management
-    points, each tagged with the discovery basis; arbitrary hosts are never
-    invented or scanned.  Entries that canonicalize to the same endpoint
-    (IPv4 address, or hostname resolved against the scan's own DNS map) are
-    collapsed to a single candidate; genuinely distinct endpoints are kept.
+    Entries that resolve to the same IPv4 address (directly or through the
+    scan's own DNS map) are collapsed to a single candidate; genuinely
+    distinct endpoints are kept.
     """
-    result = result if isinstance(result, dict) else {}
-    observed = [(item, "distribution-point") for item in (result.get("distribution_points", []) or [])]
-    observed += [(item, "management-point") for item in (result.get("management_points", []) or [])]
-    pxe_state = str((result.get("pxe") or {}).get("status", "")).upper()
-    resolved = _resolved_hostnames(host_identities)
+    # Hostnames seen with an explicit address in the same discovery result are
+    # resolved locally, so a hostname-only duplicate still collapses even when
+    # the scan's DNS map has no matching record.
+    local_hosts = {}
+    for item, _ in observed:
+        if not isinstance(item, dict):
+            continue
+        host = str(item.get("fqdn") or item.get("host") or item.get("name") or "").strip().lower()
+        addresses = item.get("ip_addresses") or item.get("ips") or []
+        if isinstance(addresses, str):
+            addresses = [addresses]
+        address = _candidate_ipv4(addresses)
+        if host and address:
+            local_hosts.setdefault(host, address)
+            local_hosts.setdefault(host.split(".")[0], address)
+    resolved = {**local_hosts, **_resolved_hostnames(host_identities)}
     candidates, seen = [], set()
     for item, basis in observed:
         if not isinstance(item, dict):
@@ -267,6 +273,30 @@ def pxe_candidates(result, host_identities=None):
                            "site_code": item.get("site_code", ""), "basis": basis,
                            "pxe_evidence": pxe_state == "ENABLED"})
     return sorted(candidates, key=lambda c: (c["site_code"], c["dp"].casefold()))
+
+
+def pxe_candidates(result, host_identities=None):
+    """Return deterministic PXE/DP candidates from SCCM discovery.
+
+    SCCM commonly co-locates the management point, distribution point, and
+    PXE/WDS role on a single site system, and the passive netboot SCP
+    attributes are not always published.  Candidates are therefore drawn from
+    discovered distribution points first and then from confirmed management
+    points, each tagged with the discovery basis; arbitrary hosts are never
+    invented or scanned.
+    """
+    result = result if isinstance(result, dict) else {}
+    observed = [(item, "distribution-point") for item in (result.get("distribution_points", []) or [])]
+    observed += [(item, "management-point") for item in (result.get("management_points", []) or [])]
+    pxe_state = str((result.get("pxe") or {}).get("status", "")).upper()
+    return _canonical_candidates(observed, host_identities, pxe_state=pxe_state)
+
+
+def dp_candidates(result, host_identities=None):
+    """Return every unique Distribution Point from the merged SCCM topology."""
+    result = result if isinstance(result, dict) else {}
+    observed = [(item, "distribution-point") for item in (result.get("distribution_points", []) or [])]
+    return _canonical_candidates(observed, host_identities)
 
 
 def _sccm_host(value):

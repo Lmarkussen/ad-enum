@@ -25,6 +25,12 @@ def configure_pipeline(monkeypatch, tmp_path, sccm_discovery):
         "distribution_points": [], "site_servers": []})
     monkeypatch.setattr(cli, "sccmhunter_capability", lambda *args, **kwargs: {
         "status": "NOT AVAILABLE", "detail": "fixture", "root": "", "commit": ""})
+    monkeypatch.setattr(cli, "run_sccmsecrets_files", lambda *args, **kwargs: {
+        "dp": kwargs.get("dp", ""), "state": "NOT TESTED", "access": "UNKNOWN", "indexed": 0,
+        "downloaded": 0, "interesting": 0, "files": [], "credentials": [],
+        "errors": ["fixture"], "source": "", "command": ""})
+    monkeypatch.setattr(cli, "sccmsecrets_capability", lambda *args, **kwargs: {
+        "status": "NOT AVAILABLE", "detail": "fixture", "root": "", "commit": ""})
     monkeypatch.setattr(cli, "probe_anonymous_ldap", lambda *args, **kwargs: {
         "bind": "DENIED", "rootdse": "DENIED", "domain_data": "DENIED", "sources": ["test"]})
     monkeypatch.setattr(cli, "probe_anonymous_smb", lambda *args, **kwargs: {

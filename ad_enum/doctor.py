@@ -6,6 +6,7 @@ from pathlib import Path
 from .core.planner import find_executable
 from .pxethief_adapter import pxethief_capability
 from .sccmhunter_adapter import sccmhunter_capability
+from .sccmsecrets_adapter import sccmsecrets_capability
 
 # Check the command interfaces used by the existing adapters, without targets.
 REQUIRED_TOOLS = (
@@ -67,6 +68,9 @@ def report():
     sccmhunter = sccmhunter_capability()
     healthy &= sccmhunter["status"] == "PASS"
     print(f"  {'SCCMHunter':<21} {sccmhunter['status']} ({sccmhunter['detail']})")
+    sccmsecrets = sccmsecrets_capability()
+    healthy &= sccmsecrets["status"] == "PASS"
+    print(f"  {'SCCMSecrets':<21} {sccmsecrets['status']} ({sccmsecrets['detail']})")
     # Protocol help loads argument definitions only. Import the implementations
     # with NetExec's isolated interpreter to catch missing runtime dependencies.
     nxc = find_executable("nxc")

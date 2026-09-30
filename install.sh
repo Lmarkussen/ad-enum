@@ -306,6 +306,30 @@ if [[ "$mode" != minimal ]]; then
     fail "SCCMHunter startup failed: sccmhunter.py --help"
     exit 1
   fi
+  say "Installing SCCMSecrets DP inspection tool"
+  sccmsecrets_root="$repo_dir/.cache/SCCMSecrets"
+  sccmsecrets_url="https://github.com/synacktiv/SCCMSecrets.git"
+  mkdir -p "$(dirname "$sccmsecrets_root")"
+  if [[ -d "$sccmsecrets_root/.git" ]] && git -C "$sccmsecrets_root" remote get-url origin >/dev/null 2>&1; then
+    run_logged "Fetching SCCMSecrets source" timeout 300s git -C "$sccmsecrets_root" fetch origin
+    run_logged "Updating SCCMSecrets source" timeout 300s git -C "$sccmsecrets_root" merge --ff-only FETCH_HEAD
+  else
+    if [[ -e "$sccmsecrets_root" ]]; then
+      warn "Removing incomplete installer-managed SCCMSecrets checkout"
+      rm -rf -- "$sccmsecrets_root"
+    fi
+    run_logged "Cloning SCCMSecrets from public GitHub" timeout 300s git clone "$sccmsecrets_url" "$sccmsecrets_root"
+  fi
+  ok "SCCMSecrets source available"
+  run_logged "Creating SCCMSecrets environment" "$PYTHON_BIN" -m venv "$sccmsecrets_root/.venv"
+  run_logged "Installing SCCMSecrets dependencies" timeout 900s "$sccmsecrets_root/.venv/bin/python" -m pip install -r "$sccmsecrets_root/requirements.txt"
+  CURRENT_STAGE="Checking SCCMSecrets startup"
+  if "$sccmsecrets_root/.venv/bin/python" "$sccmsecrets_root/SCCMSecrets.py" --help >/dev/null 2>&1; then
+    ok "SCCMSecrets environment ready"
+  else
+    fail "SCCMSecrets startup failed: SCCMSecrets.py --help"
+    exit 1
+  fi
 fi
 
 CURRENT_STAGE="Running AD-Enum doctor"
