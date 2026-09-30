@@ -156,3 +156,16 @@ def test_installer_provisions_isolated_sccmsecrets_from_public_source():
     assert "sccmsecrets_root/.venv" in installer
     assert "SCCMSecrets.py --help" in installer
     assert "SCCMSecrets.py policies" not in installer
+
+
+def test_files_command_is_bounded_and_never_uses_the_policies_mode():
+    command = ss.build_command("/py", "/SCCMSecrets.py", dp="10.1.10.41", username="localuser",
+                               password="ScannerOnlySecret")
+
+    assert command[2] == "files" and "policies" not in command
+    extensions = command[command.index("-e") + 1]
+    assert extensions == ss.DEFAULT_EXTENSIONS
+    assert ".pfx" not in extensions  # private-key material is never pulled automatically
+    assert command[command.index("-r") + 1] == str(ss.MAX_RECURSION)
+    assert ss.MAX_RECURSION < 10  # bounded shallower than the tool default
+    assert "ScannerOnlySecret" not in ss.redact_command(command, "ScannerOnlySecret")
