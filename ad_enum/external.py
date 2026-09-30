@@ -1,4 +1,6 @@
 """Ordered, failure-isolated execution of external read-only collectors."""
+import re
+
 from .adapters.certipy import CertipyAdapter
 from .adapters.ldapdomaindump import LDAPDomainDumpAdapter
 from .adapters.netexec import NetExecAdapter
@@ -13,6 +15,35 @@ ADAPTERS = {
     "relay": RelayKingAdapter,
     "networkhound": NetworkHoundAdapter,
 }
+
+
+def failure_summary(exc):
+    """Return a concise, non-secret operator-facing failure reason.
+
+    The exception text has already been redacted by the adapter, so no scanner
+    secret can end up in the summary.
+    """
+    text = str(exc)
+    lowered = text.casefold()
+    if "strongerauthrequired" in lowered or "stronger_auth_required" in lowered \
+            or "stronger authentication" in lowered:
+        return "DC requires protected LDAP"
+    if any(token in lowered for token in ("certificate verify", "sslerror", "ssl error",
+                                          "tls handshake", "tls", "ssl")):
+        return "TLS connection failed"
+    hash_match = re.search(r"unsupported hash type\s+(\w+)", text, re.IGNORECASE)
+    if hash_match:
+        return f"dependency error: {hash_match.group(1).upper()} unavailable"
+    if any(token in lowered for token in ("modulenotfounderror", "no module named", "importerror")):
+        return "dependency error: missing Python module"
+    if any(token in lowered for token in ("invalidcredentials", "invalid credentials",
+                                          "logon failure", "0x52e", "authentication failed",
+                                          "authentication rejected")):
+        return "authentication rejected"
+    first = next((line.strip() for line in text.splitlines() if line.strip()), "")
+    first = re.sub(r"^(RuntimeError|FileNotFoundError|OSError|TimeoutError):\s*", "", first)
+    first = re.sub(r"^[\w.-]+ exited \d+:\s*", "", first)
+    return first[:120] or "execution error"
 
 def execute_external(context, plan, *, certipy_snapshot=None, progress=None):
     results, diagnostics = {}, []
@@ -40,11 +71,13 @@ def execute_external(context, plan, *, certipy_snapshot=None, progress=None):
                 results[item.spec.id] = {"status": "PASS", "result": adapter_type().run(context=context)}
             if progress: progress("end", item.spec.name, "PASS")
         except Exception as exc:
-            results[item.spec.id] = {"status": "FAILED", "reason": f"{type(exc).__name__}: {exc}"}
+            summary = failure_summary(exc)
+            results[item.spec.id] = {"status": "FAILED", "summary": summary,
+                                     "reason": f"{type(exc).__name__}: {exc}"}
             diagnostics.append(f"{item.spec.id}: {type(exc).__name__}: {exc}")
             context.workspace.write_json(context.workspace.raw_dir(item.spec.outputs[0]) / "failure.json",
                                          results[item.spec.id])
-            if progress: progress("end", item.spec.name, "FAILED")
+            if progress: progress("end", item.spec.name, "FAILED", summary)
         finally:
             context.tool_output_callback = previous_callback if 'previous_callback' in locals() else None
     return results, diagnostics

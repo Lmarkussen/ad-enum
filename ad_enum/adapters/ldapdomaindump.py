@@ -16,7 +16,12 @@ class LDAPDomainDumpAdapter(ToolAdapter):
         command = self.build_command(domain=context.domain, username=context.auth.username,
                                      password=context.auth.password, dc_ip=context.dc_ip,
                                      output_dir=raw)
-        if context.ldaps: command[-1] = "ldaps://" + command[-1]
+        # LDAPDomainDump selects SSL with a connection-string scheme (its only
+        # protected mode: there is no --ssl/--port flag). Use it whenever the
+        # operator asked for LDAPS or AD-Enum already had to negotiate a
+        # protected native LDAP transport against a signing-required DC.
+        if context.ldaps or getattr(context, "protected_ldap", False):
+            command[-1] = "ldaps://" + command[-1]
         proc = self.execute(command, timeout=context.timeout, secrets=(context.auth.password,), stream=context.tool_output_callback)
         context.workspace.write_text(raw / "stdout.txt", self.redact_text(proc.stdout, (context.auth.password,)))
         context.workspace.write_text(raw / "stderr.txt", self.redact_text(proc.stderr, (context.auth.password,)))

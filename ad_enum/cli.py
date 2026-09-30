@@ -1410,7 +1410,9 @@ def main():
     imported_certipy = CertipyAdapter().from_json(a.certipy_json) if a.certipy_json else None
     context = ScanContext(workspace.domain, target, AuthContext(a.username, a.password, bind_domain),
                           workspace, timeout=a.timeout, scan_id=workspace.scan_id,
-                          ldaps=a.ldaps, force_kerb=a.force_kerb,
+                          ldaps=a.ldaps,
+                          protected_ldap=bool(getattr(collector, "negotiated_protection", None)),
+                          force_kerb=a.force_kerb,
                           tool_output=a.tool_output,
                           auto_config={"requested": a.auto_config},
                           kerberos_session=collector.kerberos_session)
@@ -1431,7 +1433,7 @@ def main():
         if stage == "start": console.activity(f"Running {label}...")
         elif stage == "tool": console.line(console.paint(f"[{label}{':stderr' if state == 'stderr' else ''}] {line.rstrip()}" , "dim" if state == "stderr" else None))
         elif state == "PASS": console.complete(f"{label} complete")
-        elif state in {"FAILED", "PARTIAL"}: console.complete(f"{label} failed — continuing", "WARNING")
+        elif state in {"FAILED", "PARTIAL"}: console.complete(f"{label} failed — {line or 'continuing'}", "WARNING")
         else: console.complete(f"{label} unavailable — skipped", "SKIPPED")
     external_results, external_diagnostics = execute_external(
         context, plan, certipy_snapshot=imported_certipy, progress=report_progress)

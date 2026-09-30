@@ -22,6 +22,9 @@ class ScanContext:
     scan_id: str = ""
     targets: list = field(default_factory=list)
     ldaps: bool = False
+    # Set when AD-Enum had to negotiate a protected native LDAP transport
+    # (StartTLS/LDAPS) because the DC requires signing/integrity.
+    protected_ldap: bool = False
     force_kerb: bool = False
     dc_hostname: str = ""
     auto_config: dict = field(default_factory=dict)
