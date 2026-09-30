@@ -21,9 +21,14 @@ The PXEThief checkout is pinned to pull request #11
 (`pull/11/head:pr-11`), which is required for the supported SCCM/PXE targets;
 the installer never falls back to the default branch. PXEThief runs in its own
 environment under `.cache/PXEThief/.venv`, so it does not contaminate the
-project `.venv`. The installer does not silently grant raw-socket privilege: a
-PXE validation reports `NOT TESTED` with the tool's own permission error unless
-AD-Enum runs with the required privilege (root or `CAP_NET_RAW`).
+project `.venv`.
+
+Normal scans run unprivileged; only PXE validation needs extra privilege. The
+installer does not silently grant raw-socket privilege: AD-Enum warns once at
+startup and the PXE finding reports `NOT TESTED` unless it runs with root or
+`CAP_NET_RAW` (`CAP_NET_ADMIN` is not required). See the README "Privileges"
+section for the `sudo` and temporary `CAP_NET_RAW` options. AD-Enum never grants
+or persists capabilities on its own.
 
 ```bash
 ./install.sh                 # core plus default collectors

@@ -67,6 +67,32 @@ Use `--html-out report.html` for an optional standalone browser-readable report.
 The default `results.txt` remains authoritative. `--tool-output` is an opt-in,
 very verbose troubleshooting mode for streaming external collector output.
 
+## Privileges
+
+AD-Enum does not generally require root: native LDAP, AD CS, GPO/SYSVOL, SMB,
+SCCM discovery, SCCMHunter, and SCCMSecrets all run unprivileged.
+
+The exception is SCCM PXE validation via PXEThief, which sends its PXE request
+over a raw socket and therefore needs raw-socket privilege — `root` or
+`CAP_NET_RAW` (`CAP_NET_ADMIN` is not required). When that privilege is missing,
+AD-Enum prints one warning at startup, continues every other check, and reports
+the PXE finding as `NOT TESTED`. It never grants or persists privileges on its
+own.
+
+```bash
+# Run the whole scanner as root. Simple, but broader than necessary.
+sudo ./ad-enum.py -u scanuser -p '<password>' -domain example.local -dc-ip 192.0.2.10
+
+# Least privilege: add only CAP_NET_RAW for this one invocation, then drop back
+# to your own user. No persistent capability is set anywhere.
+sudo setpriv --reuid="$(id -u)" --regid="$(id -g)" --clear-groups \
+  --inh-caps=+net_raw --ambient-caps=+net_raw \
+  ./ad-enum.py -u scanuser -p '<password>' -domain example.local -dc-ip 192.0.2.10
+```
+
+Do not `setcap` the system Python or the project `.venv` Python; prefer a
+per-invocation wrapper as above.
+
 ## Example output
 
 ```text

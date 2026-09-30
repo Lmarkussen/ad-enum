@@ -14,6 +14,16 @@ provenance are retained in structured evidence and the credential artifacts;
 raw PXEThief stdout and intermediate crypto media stay under
 `SCCM/pxethief/raw/` and are never part of the console report.
 
+When PXE validation cannot run because raw-socket privilege is missing
+(`root` or `CAP_NET_RAW`), a single startup warning is printed and the finding
+is recorded as:
+
+```text
+PXE — mecm.sccm.lab
+  State   NOT TESTED
+  Reason  PXEThief requires raw-socket privilege (root or CAP_NET_RAW) to send the PXE request
+```
+
 SCCMHunter discovery runs in an isolated `HOME` under `SCCM/sccmhunter/raw/`;
 its console output and discovery database stay there, and the normalized
 topology is merged into the native SCCM inventory.

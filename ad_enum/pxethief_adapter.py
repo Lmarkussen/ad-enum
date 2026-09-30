@@ -94,6 +94,48 @@ def pxethief_available(checkout=None):
     return bool(pxethief_python(checkout) and pxethief_script(checkout))
 
 
+# CAP_NET_RAW is capability bit 13 in the Linux capabilities model.  PXEThief
+# mode 2 opens an AF_PACKET/SOCK_RAW socket to send its PXE request, so the
+# *effective* capability of the running process (not the file capability of the
+# interpreter) is what matters.  Launchers such as ``setpriv``/``sudo`` can raise
+# it for the process without any persistent file capability.
+CAP_NET_RAW_BIT = 13
+# Overridable for tests; the real process capability source on Linux.
+PROC_SELF_STATUS = "/proc/self/status"
+
+
+def _effective_uid():
+    geteuid = getattr(os, "geteuid", None)
+    return geteuid() if geteuid else None
+
+
+def has_raw_socket_privilege(status_text=None):
+    """Return True if the current process can create a raw socket.
+
+    Detects ``root`` or an effective ``CAP_NET_RAW`` from ``/proc/self/status``
+    so capability-preserving wrappers are honored rather than only executable
+    metadata.  Any missing or unparsable source fails safe: the caller then warns
+    that PXE validation will be NOT TESTED.  ``status_text`` is accepted for
+    tests; when omitted ``/proc/self/status`` is read directly.
+    """
+    if _effective_uid() == 0:
+        return True
+    text = status_text
+    if text is None:
+        try:
+            text = Path(PROC_SELF_STATUS).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return False
+    for line in str(text).splitlines():
+        if line.startswith("CapEff:"):
+            value = line.split(":", 1)[1].strip()
+            try:
+                return bool(int(value, 16) & (1 << CAP_NET_RAW_BIT))
+            except ValueError:
+                return False
+    return False
+
+
 def _git(root, *args, timeout=10):
     try:
         result = subprocess.run(["git", "-C", str(root), *args], capture_output=True,

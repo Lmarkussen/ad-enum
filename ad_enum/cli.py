@@ -39,7 +39,8 @@ from .recon import (normalize_mssql, normalize_dfs, normalize_services,
 from .service_probe import DEFAULT_SERVICES, probe_known_services
 from .access import from_netexec_hosts, merge_access, filter_redundant_access_targets
 from .adapters.netexec import NetExecAdapter
-from .pxethief_adapter import run_pxethief, pxethief_capability, correlate_pxethief_recovered
+from .pxethief_adapter import (run_pxethief, pxethief_capability,
+                               correlate_pxethief_recovered, has_raw_socket_privilege)
 
 
 CATEGORY_ORDER = ("ADCS", "POLICY", "KERBEROS", "ACCOUNT", "DELEGATION",
@@ -1297,7 +1298,15 @@ def _privileged_group_entries(inventory, names):
 
 
 def _build_parser():
-    p = argparse.ArgumentParser(description="Enumerate AD CS and explain ESC1 candidates")
+    p = argparse.ArgumentParser(
+        description="Enumerate AD CS and explain ESC1 candidates",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=("Privilege:\n"
+                "  AD-Enum does not generally require root.\n"
+                "  SCCM PXE validation via PXEThief requires raw-socket privilege:\n"
+                "    root or CAP_NET_RAW.\n"
+                "  Without it the scan continues normally and PXE validation is\n"
+                "  reported NOT TESTED.  CAP_NET_ADMIN is not required."))
     p.add_argument("-dc-ip", "--dc-ip", "-dc", "--dc", dest="dc", metavar="DC_IP",
                    help="domain controller IP address")
     p.add_argument("--port", type=int, default=None); p.add_argument("-domain", "--domain", required=True)
@@ -1416,6 +1425,15 @@ def main():
         console.status(f"Domain mismatch: supplied {a.domain}, discovered {root}", "FAILED")
         return 2
     console.status("Credentials are Valid", "VALID")
+    # Advisory only: the normal scan never gates on raw-socket privilege.  The
+    # SCCM phase always schedules PXE validation, so warn once here (before the
+    # lengthy scan) when PXEThief will not be able to send its PXE request.  The
+    # per-endpoint PermissionError normalization remains authoritative.
+    if not has_raw_socket_privilege():
+        console.line()
+        console.complete("PXEThief requires root or CAP_NET_RAW for SCCM PXE validation.",
+                         "WARNING")
+        console.line("      Other checks will continue normally.")
     workspace = ScanWorkspace(a.output_dir, root, original_target=target)
     # Establish one scan-scoped accumulator before any analysis records
     # coverage; the final write changes scan status to COMPLETE.
