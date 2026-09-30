@@ -738,6 +738,58 @@ def _relay_finding_lines(items, *, title_style=None, host_identities=None, width
     return lines
 
 
+RECOVERED_CREDENTIAL_DISPLAY_LIMIT = 5
+
+
+def _recovered_material(items):
+    """Keep only value-bearing recovered items (i.e. actual secrets)."""
+    return [item for item in (items or [])
+            if isinstance(item, dict) and item.get("value") not in (None, "")]
+
+
+def _recovered_value_label(item):
+    """Label a recovered value as a password only when that is what it is."""
+    name = str(item.get("name") or item.get("type") or "")
+    if item.get("username") or any(token in name.casefold()
+                                   for token in ("password", "passwd", "pwd", "secret")):
+        return "Password"
+    return "Value"
+
+
+def _recovered_credential_lines(items, *, indent="    ", width=None, secret_style=None,
+                                limit=RECOVERED_CREDENTIAL_DISPLAY_LIMIT):
+    """Show recovered target credentials; bound the list, keep all in artifacts."""
+    items = _recovered_material(items)
+    if not items:
+        return []
+    lines = ["", f"{indent}Recovered credentials"]
+    for index, item in enumerate(items[:limit]):
+        if index:
+            lines.append("")
+        name = str(item.get("name") or item.get("type") or "Recovered secret")
+        lines.append(f"{indent}  {name}")
+        fields = []
+        if item.get("username"):
+            fields.append(("Account", item["username"]))
+        fields.append((_recovered_value_label(item), item.get("value", "")))
+        if item.get("step"):
+            fields.append(("Step", item["step"]))
+        lines.extend(_compact_field_lines(fields, indent=indent + "    ", width=width,
+                                          value_style=secret_style,
+                                          highlight_labels={"Password", "Value"}))
+    if len(items) > limit:
+        lines.append("")
+        lines.append(f"{indent}  ... {len(items) - limit} additional recovered credential(s); "
+                     "see the credential artifacts")
+    return lines
+
+
+def _credentials_artifact_lines(reference, *, indent="    ", shown=True):
+    if not reference or not shown:
+        return []
+    return ["", f"{indent}Credentials saved to:", f"{indent}  {reference}"]
+
+
 def _sccm_finding_lines(items, *, title_style=None, host_identities=None, width=None,
                         inventory=None, secret_style=None, direct_style=None):
     pxe = [item for item in items if item.get("rule") == "PXE"]
@@ -764,12 +816,23 @@ def _sccm_finding_lines(items, *, title_style=None, host_identities=None, width=
             fields.append(("State", state))
         if evidence.get("reason"):
             fields.append(("Reason", evidence["reason"]))
+        recovered_items = _recovered_material(evidence.get("recovered"))
+        secret_items = [item for item in recovered_items
+                        if _recovered_value_label(item) == "Password"]
         if evidence.get("recovered_count"):
-            fields.append(("Recovered", evidence["recovered_count"]))
+            fields.append(("Recovered", f"{evidence['recovered_count']} items"))
+        # Only report a separate credential count when some recovered items are
+        # account identifiers rather than secrets.
+        if secret_items and len(secret_items) != evidence.get("recovered_count"):
+            fields.append(("Credentials", len(secret_items)))
         if evidence.get("source"):
             fields.append(("Source", evidence["source"]))
         if fields:
             lines.extend(_compact_field_lines(fields, indent="    ", width=width))
+        lines.extend(_recovered_credential_lines(recovered_items, width=width,
+                                                 secret_style=secret_style))
+        lines.extend(_credentials_artifact_lines(evidence.get("credentials_artifact"),
+                                                 shown=bool(recovered_items)))
     for item in sorted(dp_content, key=order):
         if lines:
             lines.append("")
@@ -797,6 +860,11 @@ def _sccm_finding_lines(items, *, title_style=None, host_identities=None, width=
             fields.append(("Source", evidence["source"]))
         if fields:
             lines.extend(_compact_field_lines(fields, indent="    ", width=width))
+        recovered_items = _recovered_material(evidence.get("credentials"))
+        lines.extend(_recovered_credential_lines(recovered_items, width=width,
+                                                 secret_style=secret_style))
+        lines.extend(_credentials_artifact_lines(evidence.get("credentials_artifact"),
+                                                 shown=bool(recovered_items)))
     if remaining:
         if lines:
             lines.append("")
@@ -2173,6 +2241,7 @@ def main():
                       "media_file": result.get("media_file", ""),
                       "recovered_count": recovered_count, "recovered": recovered,
                       "source": source, "reason": reason,
+                      "credentials_artifact": f"{workspace.domain}/credentials.txt",
                       "errors": list(result.get("errors", []) or [])},
             status=("confirmed" if state == "VULNERABLE" else
                     "not-vulnerable" if state == "NOT VULNERABLE" else "not-tested"),
@@ -2197,6 +2266,7 @@ def main():
                       "interesting": result.get("interesting", 0),
                       "credential_count": len(credentials), "credentials": credentials,
                       "source": source, "reason": (result.get("errors") or [""])[0],
+                      "credentials_artifact": f"{workspace.domain}/credentials.txt",
                       "errors": list(result.get("errors", []) or [])},
             status=("confirmed" if credentials else
                     "single-source" if state == "ACCESSIBLE" else "informational"),
@@ -2240,7 +2310,7 @@ def main():
         for secret in evidence.get("recovered", []) or []:
             if not secret.get("value"):
                 continue
-            add_credential(account=secret.get("username") or secret.get("name"), value=secret["value"],
+            add_credential(account=secret.get("username") or "", value=secret["value"],
                            kind=secret.get("name") or "PXE media credential",
                            source=evidence.get("source") or "PXEThief",
                            context=f"PXE media — {evidence.get('dp', '')}")
@@ -2249,7 +2319,7 @@ def main():
         for secret in evidence.get("credentials", []) or []:
             if not secret.get("value"):
                 continue
-            add_credential(account=secret.get("username") or secret.get("name"), value=secret["value"],
+            add_credential(account=secret.get("username") or "", value=secret["value"],
                            kind=secret.get("type") or "SCCM DP file secret",
                            source="SCCMSecrets",
                            context=f"SCCM DP {evidence.get('dp', '')} — {secret.get('path', '')}")

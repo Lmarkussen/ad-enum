@@ -204,12 +204,13 @@ def test_relay_findings_are_grouped_by_protocol_and_signing_candidate():
     assert findings == original
 
 
-def test_sccm_pxe_finding_is_compact_and_never_dumps_recovered_secret(tmp_path):
+def test_sccm_pxe_finding_surfaces_recovered_target_secret(tmp_path):
     finding = {"category": "SCCM", "rule": "PXE", "title": "PXE VULNERABLE — 192.0.2.41",
                "affected_object": "192.0.2.41", "status": "confirmed",
                "sources": [{"source": "PXEThief", "observed": True}],
                "evidence": {"dp": "192.0.2.41", "site": "P01", "state": "VULNERABLE",
                             "recovered_count": 1, "source": "PXEThief",
+                            "credentials_artifact": "example.test/credentials.txt",
                             "recovered": [{"name": "NetworkAccessAccount",
                                            "username": r"EXAMPLE\svc-naa",
                                            "value": "ExampleRecoveredSecret"}]}}
@@ -221,10 +222,15 @@ def test_sccm_pxe_finding_is_compact_and_never_dumps_recovered_secret(tmp_path):
     assert "PXE VULNERABLE — 192.0.2.41" in findings_section
     assert "DP         192.0.2.41" in findings_section
     assert "Site       P01" in findings_section
-    assert "Recovered  1" in findings_section
+    assert "Recovered" in findings_section and "1 items" in findings_section
     assert "Source     PXEThief" in findings_section
-    assert "ExampleRecoveredSecret" not in findings_section
-    assert "ExampleRecoveredSecret" not in report
+    # Target secrets are operator evidence: the value and account are shown,
+    # with a pointer to the consolidated credential artifact.
+    assert "Recovered credentials" in findings_section
+    assert r"EXAMPLE\svc-naa" in findings_section
+    assert "ExampleRecoveredSecret" in findings_section
+    assert "Credentials saved to:" in findings_section
+    assert "example.test/credentials.txt" in findings_section
 
 
 def test_smb_share_access_is_grouped_and_sorted(tmp_path):
