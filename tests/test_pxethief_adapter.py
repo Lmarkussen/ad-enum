@@ -83,7 +83,24 @@ def test_parser_reports_unreachable_dp_and_permission_failure_as_not_tested():
 
     denied = px.parse_pxethief_output(PERMISSION_OUTPUT)
     assert denied["state"] == "NOT TESTED"
-    assert any("CAP_NET_RAW" in error for error in denied["errors"])
+    reason = " ".join(denied["errors"])
+    assert "CAP_NET_RAW" in reason and "root" in reason
+    # Proven against PR #11 mode 2: only CAP_NET_RAW is required, and the tool
+    # does not sniff for this failure.
+    assert "CAP_NET_ADMIN" not in reason
+    assert "packet capture" not in reason.lower()
+
+
+def test_unprivileged_run_is_attempted_and_its_permission_error_is_normalized(tmp_path, monkeypatch):
+    _fake_pxethief(tmp_path, monkeypatch, output=PERMISSION_OUTPUT, exit_code=1)
+    workdir = tmp_path / "work"
+
+    result = px.run_pxethief("192.0.2.41", timeout=10, workdir=workdir)
+
+    assert result["state"] == "NOT TESTED"
+    assert "raw-socket privilege (root or CAP_NET_RAW)" in result["errors"][0]
+    # The interpreter really ran, i.e. AD-Enum has no pre-execution privilege gate.
+    assert "PermissionError" in (workdir / "stdout.txt").read_text()
 
 
 def test_run_pxethief_uses_isolated_venv_and_keeps_raw_output_in_artifacts(tmp_path, monkeypatch):
@@ -154,6 +171,20 @@ def test_capability_rejects_a_checkout_that_is_not_on_pr_11(tmp_path, monkeypatc
 
     capability = px.pxethief_capability()
     assert capability["status"] == "FAILED" and "pr-11" in capability["detail"]
+
+
+def test_capability_check_is_installation_only_and_never_gates_on_privilege(tmp_path, monkeypatch):
+    # The check verifies checkout/interpreter/imports; it must not claim that
+    # raw-socket privilege is a precondition (that is the tool's runtime answer).
+    root = tmp_path / "PXEThief"
+    _init_pinned_checkout(root)
+    monkeypatch.setenv("PXETHIEF_ROOT", str(root))
+
+    capability = px.pxethief_capability()
+
+    assert capability["status"] == "PASS"
+    assert "cap_net" not in capability["detail"].lower()
+    assert "root" not in capability["detail"].lower()
 
 
 def test_pxe_candidates_only_uses_discovered_dp_and_mp_and_is_deterministic():

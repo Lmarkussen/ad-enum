@@ -270,7 +270,7 @@ AD-Enum validates discovered SCCM/MECM distribution points with PXEThief
 the boot media could be used without a configured media password, so media
 variables and any embedded credentials could be recovered. `NOT VULNERABLE`
 means the media is protected by a configured password. `NOT TESTED` means the
-validation could not run (for example, the DP did not answer, or packet capture
+validation could not run (for example, the DP did not answer, or raw-socket privilege
 was not permitted).
 
 ### Why it matters

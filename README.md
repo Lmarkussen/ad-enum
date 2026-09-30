@@ -31,8 +31,8 @@ The default install provisions all required scan tools, including NetworkHound,
 RelayKing, SCCMHunter, SCCMSecrets, and PXEThief (pinned PR #11), and verifies
 them with credential-free startup checks. Tools stay under `.venv/` and
 `.cache/`; no PATH changes or second setup step are needed. Use `--verbose` for
-installer diagnostics. Packet-capture capabilities for PXEThief remain explicit
-and operator-managed.
+installer diagnostics. Raw-socket privilege for PXEThief remains explicit and
+operator-managed.
 
 ## Quick start
 
@@ -55,8 +55,8 @@ SCCM topology is discovered natively first, then corroborated and enriched by
 SCCMHunter's read-only `find` command. Every unique distribution point or site
 system in the merged topology is then validated through PXEThief; `--pxe-dp` is
 only an explicit target override for debugging. PXEThief needs a suitable local
-Ethernet/broadcast path and packet-capture privileges, so a routed tunnel may be
-usable for LDAP/SMB while remaining unsuitable for PXE.
+Ethernet/broadcast path and raw-socket privilege (root or `CAP_NET_RAW`), so a
+routed tunnel may be usable for LDAP/SMB while remaining unsuitable for PXE.
 
 Each unique Distribution Point is then indexed with SCCMSecrets in read-only
 `files` mode, retrieving a bounded set of text/configuration formats. AD-Enum

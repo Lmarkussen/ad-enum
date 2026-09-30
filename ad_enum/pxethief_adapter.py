@@ -197,8 +197,12 @@ def parse_pxethief_output(text):
                   _NO_ROUTE if _NO_ROUTE in output else _NO_OPTION)
         result["errors"].append(reason)
     elif "PermissionError" in output or "Operation not permitted" in output:
+        # Proven against PR #11 mode 2: Scapy opens an AF_PACKET/SOCK_RAW
+        # socket to send the PXE request, which needs CAP_NET_RAW (root has it).
+        # CAP_NET_ADMIN is not required for this path.
         result["state"] = "NOT TESTED"
-        result["errors"].append("packet capture requires root or CAP_NET_RAW/CAP_NET_ADMIN")
+        result["errors"].append(
+            "PXEThief requires raw-socket privilege (root or CAP_NET_RAW) to send the PXE request")
     else:
         result["errors"].append("PXEThief produced no recognized PXE state marker")
     return result

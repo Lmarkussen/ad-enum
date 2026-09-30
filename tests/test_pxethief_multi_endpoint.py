@@ -202,3 +202,28 @@ def test_sccm_infrastructure_summary_is_compact_and_hunter_free_of_raw_output(mo
     for marker in ("[+]", "[-]", "[!]", "First time use detected"):
         assert marker not in report
     assert "\033[" not in report
+
+
+def test_permission_failure_on_first_endpoint_does_not_stop_later_endpoints(monkeypatch, tmp_path):
+    calls = []
+    _configure(monkeypatch, tmp_path, _sccm(_endpoints(addresses=("192.0.2.11", "192.0.2.12"))),
+               {}, calls)
+    permission_reason = ("PXEThief requires raw-socket privilege (root or CAP_NET_RAW) "
+                         "to send the PXE request")
+
+    def fake_run(target, *, timeout, workdir, root=None):
+        calls.append({"target": target, "workdir": Path(workdir)})
+        if target == "192.0.2.11":
+            return normalize_pxe_validation({"dp": target, "state": "NOT TESTED",
+                                             "source": "PXEThief",
+                                             "errors": [permission_reason]})
+        return normalize_pxe_validation({"dp": target, "state": "VULNERABLE",
+                                         "source": "PXEThief", "recovered_count": 2})
+
+    monkeypatch.setattr(cli, "run_pxethief", fake_run)
+
+    assert cli.main() == 0
+    assert [call["target"] for call in calls] == ["192.0.2.11", "192.0.2.12"]
+    rows = json.loads((tmp_path / "sccm.lab" / "SCCM" / "pxe-validation.json").read_text())
+    assert [row["state"] for row in rows] == ["NOT TESTED", "VULNERABLE"]
+    assert "raw-socket privilege" in rows[0]["errors"][0]
