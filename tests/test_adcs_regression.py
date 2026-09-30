@@ -173,7 +173,8 @@ def test_esc1_matrix_and_esc8_reach_all_report_artifacts(tmp_path, monkeypatch, 
         assert 'ESC8' in text and 'Example-CA' in text
         assert '\x1b[' not in text
     text = (root / 'results.txt').read_text()
-    assert 'Web enrollment HTTP' in text and 'ENABLED' in text
+    assert 'ESC8 VULNERABLE — Example-CA' in text
+    assert 'HTTP' in text and 'HTTPS' in text and 'ENABLED' in text
     assert '/certsrv/' not in text  # URL was not supplied by this JSON artifact.
     evaluations = json.loads((root / 'ADCS/evaluations.json').read_text())
     assert len(evaluations) == 6

@@ -147,49 +147,49 @@ def _adcs_source_text(item):
     return " + ".join(sources)
 
 
-def _adcs_values(value):
-    if isinstance(value, (list, tuple, set, frozenset)):
-        return [str(item) for item in value if item not in (None, "")]
-    if value not in (None, ""):
-        return [str(value)]
-    return []
+def _adcs_disposition(item):
+    """Operator-facing disposition derived from the existing finding status."""
+    status = str(item.get("status", "") or "").casefold()
+    if "disagreement" in status:
+        return "DISAGREEMENT"
+    if "refuted" in status:
+        return "REFUTED"
+    return "VULNERABLE"
 
 
-def _certipy_rights(payload, principals):
-    access_rights = payload.get("Access Rights", {}) or {}
-    if not isinstance(access_rights, dict):
-        return []
-    principal_keys = {value.casefold() for value in principals}
-    result = []
-    canonical = {"manageca": "ManageCA", "managecertificates": "ManageCertificates"}
-    for right, entries in access_rights.items():
-        entries = _adcs_values(entries)
-        if principal_keys and not any(entry.casefold() in principal_keys for entry in entries):
-            continue
-        label = canonical.get(str(right).casefold(), str(right))
-        if label not in result:
-            result.append(label)
-    return result
+def _adcs_subject(item):
+    """Return the template/CA name already carried by the finding title."""
+    title = str(item.get("title", "") or "")
+    for separator in (" — ", " - "):
+        if separator in title:
+            return title.split(separator, 1)[1].strip()
+    return str(item.get("affected_object", "") or "").strip()
+
+
+def _adcs_title(item):
+    rule = str(item.get("rule", "") or "").strip()
+    if not rule:
+        return item.get("title", "")
+    subject = _adcs_subject(item)
+    disposition = _adcs_disposition(item)
+    return f"{rule} {disposition} — {subject}" if subject else f"{rule} {disposition}"
+
+
+def _adcs_status_field(fields, item, status):
+    """Show the internal status only when the title does not already state it."""
+    if status and _adcs_disposition(item) == "VULNERABLE":
+        fields.append(("Status", status))
 
 
 def _adcs_detail_lines(item, *, indent="    ", width=None, status=""):
+    """Concise operator-facing AD CS fields; predicate detail stays in JSON."""
     evidence = item.get("evidence", {}) or {}
     if item.get("rule") == "ESC1":
         fields = []
-        for label, key in (("CA", "ca_name"), ("CA DNS", "ca_dns"), ("Template", "template")):
+        for label, key in (("CA", "ca_name"), ("CA DNS", "ca_dns")):
             if evidence.get(key) not in (None, ""):
                 fields.append((label, evidence[key]))
-        subject_supply = evidence.get("enrollee_supplies_subject")
-        if subject_supply is not None:
-            fields.append(("Enrollee supplies subject", "ENABLED" if subject_supply else "DISABLED"))
-        client_authentication = evidence.get("client_authentication")
-        if client_authentication is not None:
-            fields.append(("Client authentication", "ENABLED" if client_authentication else "DISABLED"))
-        low_enroll = evidence.get("low_privilege_enrollment")
-        if low_enroll is not None:
-            fields.append(("Low-priv enroll", "YES" if low_enroll else "NO"))
-        if status:
-            fields.append(("Status", status))
+        _adcs_status_field(fields, item, status)
         source = _adcs_source_text(item)
         if source:
             fields.append(("Source", source))
@@ -200,58 +200,78 @@ def _adcs_detail_lines(item, *, indent="    ", width=None, status=""):
             fields.append(("Note", "Certipy template enumeration was unavailable in this run"))
         elif evidence.get("certipy_template_evaluated") and evidence.get("certipy_esc1") is False:
             fields.append(("Note", "Certipy did not classify this template as ESC1"))
-        if not fields:
-            return []
-        return _compact_field_lines(fields, indent=indent, width=width,
-                                    label_width=max(25, max(len(label) for label, _ in fields)))
+        return _compact_field_lines(fields, indent=indent, width=width)
     if item.get("rule") == "ESC8":
         payload = evidence.get("certipy", {}) or {}
         fields = []
-        for label, key in (("CA", "CA Name"), ("CA DNS", "DNS Name")):
-            if payload.get(key):
-                fields.append((label, payload[key]))
+        if payload.get("DNS Name"):
+            fields.append(("CA DNS", payload["DNS Name"]))
         web = payload.get("Web Enrollment")
         if isinstance(web, dict):
             for protocol in ("http", "https"):
-                channel = web.get(protocol) or {}
-                enabled = channel.get("enabled")
+                enabled = (web.get(protocol) or {}).get("enabled")
                 if isinstance(enabled, bool):
-                    fields.append((f"Web enrollment {protocol.upper()}", "ENABLED" if enabled else "DISABLED"))
-                binding = channel.get("channel_binding")
-                if isinstance(binding, bool):
-                    fields.append((f"{protocol.upper()} channel binding", "ENABLED" if binding else "DISABLED"))
+                    fields.append((protocol.upper(), "ENABLED" if enabled else "DISABLED"))
         elif web not in (None, ""):
-            fields.append(("Web enrollment", web))
-        if status:
-            fields.append(("Status", status))
-        fields.append(("Source", _adcs_source_text(item)))
-        fields.append(("Impact", "Web enrollment configuration may permit NTLM relay to AD CS"))
-        return _compact_field_lines(fields, indent=indent, width=width,
-                                    label_width=max(25, max(len(label) for label, _ in fields)))
+            fields.append(("Web Enrollment", web))
+        _adcs_status_field(fields, item, status)
+        source = _adcs_source_text(item)
+        if source:
+            fields.append(("Source", source))
+        return _compact_field_lines(fields, indent=indent, width=width)
     if item.get("rule") == "ESC7":
         payload = evidence.get("certipy", {}) or {}
         if not isinstance(payload, dict):
             payload = {}
-        principals = _adcs_values(payload.get("User ACL Principals"))
         fields = []
-        for label, key in (("CA", "CA Name"), ("CA DNS", "DNS Name"), ("Owner", "Owner")):
-            if payload.get(key) not in (None, ""):
-                fields.append((label, payload[key]))
-        if principals:
-            fields.append(("Effective principal", ", ".join(principals)))
-        rights = _certipy_rights(payload, principals)
-        if rights:
-            fields.append(("Rights", ", ".join(rights)))
-        if status:
-            fields.append(("Status", status))
+        if payload.get("DNS Name"):
+            fields.append(("CA DNS", payload["DNS Name"]))
+        _adcs_status_field(fields, item, status)
         source = _adcs_source_text(item)
         if source:
             fields.append(("Source", source))
-        if not fields:
-            return []
-        return _compact_field_lines(fields, indent=indent, width=width,
-                                    label_width=max(25, max(len(label) for label, _ in fields)))
+        return _compact_field_lines(fields, indent=indent, width=width) if fields else []
     return []
+
+
+def _esc4_group_lines(items, *, width=None, title_style=None, indent="  "):
+    """Collapse repeated template-level ESC4 findings into one block."""
+    entries = sorted(((_adcs_subject(item), _adcs_disposition(item), _adcs_source_text(item))
+                      for item in items), key=lambda entry: entry[0].casefold())
+    if not entries:
+        return []
+    dispositions = {entry[1] for entry in entries}
+    sources = {entry[2] for entry in entries}
+    uniform = len(dispositions) == 1 and len(sources) == 1
+    disposition = next(iter(dispositions)) if len(dispositions) == 1 else (
+        "VULNERABLE" if "VULNERABLE" in dispositions else "DISAGREEMENT")
+    lines = [_styled_finding_heading(f"ESC4 {disposition} — {len(entries)} templates", title_style)]
+    if uniform:
+        lines.append(f"{indent}  Templates")
+        lines.extend(f"{indent}    {name}" for name, _, _ in entries)
+    else:
+        name_width = max(len(name) for name, _, _ in entries)
+        for name, entry_disposition, source in entries:
+            lines.append(f"{indent}  {name:<{name_width}}  {source or entry_disposition}".rstrip())
+    lines.append("")
+    return lines
+
+
+def _adcs_finding_lines(items, *, width=None, inventory=None, host_identities=None,
+                        title_style=None, **_ignored):
+    """Render the AD CS category, collapsing repeated ESC4 templates."""
+    esc4 = [item for item in items if str(item.get("rule", "")).upper() == "ESC4"]
+    lines = []
+    rendered = False
+    for item in items:
+        if str(item.get("rule", "")).upper() == "ESC4":
+            if not rendered:
+                lines.extend(_esc4_group_lines(esc4, width=width, title_style=title_style))
+                rendered = True
+            continue
+        lines.extend(_finding_item_lines([item], width=width, inventory=inventory,
+                                         host_identities=host_identities, title_style=title_style))
+    return lines
 
 
 _ACL_RIGHT_ORDER = {
@@ -386,6 +406,8 @@ def _known_host_ip(value, host_identities=None):
 def _finding_title(item, inventory=None, host_identities=None):
     """Return the human-readable finding title without redundant state text."""
     title = item.get("title", "")
+    if item.get("category") == "ADCS":
+        return _adcs_title(item)
     if item.get("rule") in {"AS-REP-roastable", "Kerberoastable-account"}:
         title = re.sub(r"\s+\((?:enabled|disabled)\)$", "", title, flags=re.IGNORECASE)
     if item.get("category") == "ACL":
@@ -788,6 +810,9 @@ def _finding_item_lines(items, *, width=None, inventory=None, host_identities=No
 def _finding_category_lines(category, items, *, width=None, inventory=None,
                             host_identities=None, title_style=None, secret_style=None,
                             direct_style=None):
+    if category == "ADCS":
+        return _adcs_finding_lines(items, width=width, inventory=inventory,
+                                   host_identities=host_identities, title_style=title_style)
     if category == "SMB":
         return _smb_finding_lines(items, title_style=title_style, host_identities=host_identities,
                                   width=width, inventory=inventory, secret_style=secret_style,
