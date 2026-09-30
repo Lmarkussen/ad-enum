@@ -2,7 +2,7 @@ import copy
 import json
 
 from ad_enum.cli import (_access_summary_lines, _acl_detail_lines, _compact_field_lines,
-                         _cred1_summary_lines, _finding_detail_lines, _finding_lines, _results_text,
+                         _finding_detail_lines, _finding_lines, _results_text,
                          _networkhound_summary_lines, _service_summary_lines,
                          _smb_share_access_lines, _write_networkhound_dns_map)
 from ad_enum.core.console import Console
@@ -204,26 +204,27 @@ def test_relay_findings_are_grouped_by_protocol_and_signing_candidate():
     assert findings == original
 
 
-def test_sccm_finding_summary_omits_repeated_secret_and_keeps_dedicated_section(tmp_path):
-    finding = {"category": "SCCM", "rule": "CRED-1",
-               "title": "CRED-1 — PXE boot media exposes credential material",
+def test_sccm_pxe_finding_is_compact_and_never_dumps_recovered_secret(tmp_path):
+    finding = {"category": "SCCM", "rule": "PXE", "title": "PXE VULNERABLE — 192.0.2.41",
                "affected_object": "192.0.2.41", "status": "confirmed",
-               "evidence": {"dp": "192.0.2.41", "site": "P01", "unique_secrets": 1,
-                            "value": "ExampleRecoveredSecret"}}
-    dedicated = {"dp": "192.0.2.41", "site_code": "P01", "credentials": [{
-        "type": "task_sequence_variable", "name": "ExampleVariable",
-        "value": "ExampleRecoveredSecret"}]}
+               "sources": [{"source": "PXEThief", "observed": True}],
+               "evidence": {"dp": "192.0.2.41", "site": "P01", "state": "VULNERABLE",
+                            "recovered_count": 1, "source": "PXEThief",
+                            "recovered": [{"name": "NetworkAccessAccount",
+                                           "username": r"EXAMPLE\svc-naa",
+                                           "value": "ExampleRecoveredSecret"}]}}
     report = _results_text("example.test", "dc1.example.test", {}, DomainInventory(), [], [],
-                           [finding], ScanWorkspace(tmp_path, "example.test"), cred1=dedicated)
+                           [finding], ScanWorkspace(tmp_path, "example.test"))
     findings_section = report.split("Findings\n", 1)[1]
 
     assert "------------[ SCCM ]------------" in findings_section
-    assert "Status              CONFIRMED" in findings_section
-    assert "Distribution Point  192.0.2.41" in findings_section
-    assert "Site                P01" in findings_section
-    assert "Secrets             1" in findings_section
+    assert "PXE VULNERABLE — 192.0.2.41" in findings_section
+    assert "DP         192.0.2.41" in findings_section
+    assert "Site       P01" in findings_section
+    assert "Recovered  1" in findings_section
+    assert "Source     PXEThief" in findings_section
     assert "ExampleRecoveredSecret" not in findings_section
-    assert report.count("ExampleRecoveredSecret") == 1
+    assert "ExampleRecoveredSecret" not in report
 
 
 def test_smb_share_access_is_grouped_and_sorted(tmp_path):
@@ -334,7 +335,7 @@ def test_finding_titles_share_yellow_style_and_details_remain_plain():
         "Cleartext credential in GPO — Example-GPO",
         "Group control — Example-Group",
         r"Writable SMB share — FILE01\Share",
-        "CRED-1 — PXE boot media exposes credential material",
+        "PXE VULNERABLE — mecm.sccm.lab",
         "Password complexity disabled",
     ]
 
@@ -367,20 +368,14 @@ def test_orange_highlights_only_explicit_admin_marker():
 
 def test_recovered_secret_value_is_orange_but_labels_are_not():
     console = Console(stream=TTY())
-    cred_lines = _cred1_summary_lines({
-        "dp": "192.0.2.41", "credentials": [{"type": "variable", "name": "ExampleVariable",
-                                                "value": "ExampleRecoveredSecret"}],
-    }, secret_style=console.highlight_secret)
     finding_lines = _finding_detail_lines({
         "rule": "gpo-cleartext-credential", "evidence": {
             "type": "net use", "value": "AnotherExampleSecret",
         },
     }, secret_style=console.highlight_secret)
-    output = "\n".join(cred_lines + finding_lines)
+    output = "\n".join(finding_lines)
 
-    assert "Password  \033[38;5;208mExampleRecoveredSecret\033[0m" in output
     assert "Value  \033[38;5;208mAnotherExampleSecret\033[0m" in output
-    assert "\033[38;5;208mPassword" not in output
     assert "\033[38;5;208mValue" not in output
 
 
@@ -411,8 +406,6 @@ def test_results_text_never_contains_terminal_ansi_sequences(tmp_path):
         smb_shares=[{"host": "HOST1", "share": "ADMIN$", "readable": True, "writable": True}],
         access_records=[{"host": "dc1.example.test", "protocol": "RDP",
                          "authentication": "AUTHENTICATED", "privilege": "ADMIN"}],
-        cred1={"dp": "192.0.2.41", "credentials": [{"type": "variable", "name": "ExampleVariable",
-                                                       "value": "ExampleRecoveredSecret"}]},
     )
 
     assert "\033[" not in report
@@ -423,16 +416,18 @@ def test_styled_rendering_does_not_mutate_structured_records():
     share = {"host": "HOST1", "share": "ADMIN$", "readable": True, "writable": True}
     access = {"host": "dc1.example.test", "protocol": "RDP",
               "authentication": "AUTHENTICATED", "privilege": "ADMIN"}
-    cred1 = {"dp": "192.0.2.41", "credentials": [{"type": "variable", "name": "ExampleVariable",
-                                                   "value": "ExampleRecoveredSecret"}]}
-    original = copy.deepcopy((share, access, cred1))
+    pxe = {"category": "SCCM", "rule": "PXE", "title": "PXE VULNERABLE — 192.0.2.41",
+           "affected_object": "192.0.2.41", "status": "confirmed",
+           "evidence": {"dp": "192.0.2.41", "site": "P01", "state": "VULNERABLE",
+                        "recovered_count": 1, "source": "PXEThief"}}
+    original = copy.deepcopy((share, access, pxe))
 
     _smb_share_access_lines([share], access_style=console.highlight_admin)
     _access_summary_lines([access], admin_style=console.highlight_admin)
-    _cred1_summary_lines(cred1, secret_style=console.highlight_secret)
+    _finding_lines([pxe])
 
-    assert (share, access, cred1) == original
-    assert "\033[" not in json.dumps((share, access, cred1))
+    assert (share, access, pxe) == original
+    assert "\033[" not in json.dumps((share, access, pxe))
 
 
 def test_aggregated_finding_lists_affected_objects(tmp_path):
@@ -556,77 +551,33 @@ def test_results_text_uses_grouped_service_and_access_renderers(tmp_path):
     assert "Authenticated Access\n  host1.example.test  (192.0.2.20)\n    SMB  AUTHENTICATED" in report
 
 
-def test_results_report_shows_complete_cred1_finding_credential(tmp_path):
-    finding = {"category": "SCCM", "rule": "CRED-1",
-               "title": "CRED-1 — PXE boot media exposes credential material",
-               "affected_object": "10.0.0.41", "status": "confirmed",
-               "evidence": {"dp": "10.0.0.41", "site": "P01", "interface": "eth0",
-                            "wds": "CONFIRMED", "boot_var": "RECOVERED",
-                            "media_identity": "RECOVERED", "assignment": "RECEIVED",
-                            "policies": 5, "unique_secrets": 1,
-                            "type": "task_sequence_variable", "name": "SyntheticName",
-                            "value": "ADEnum-CRED1-Test-Secret",
-                            "source_policy": "Policy-A"}}
-    report = _results_text(
-        "SCCM.LAB", "dc.sccm.lab", {}, DomainInventory(), [], [], [finding],
-        ScanWorkspace(tmp_path, "sccm.lab"),
-        cred1={"dp": "10.0.0.41", "site_code": "P01", "credentials": [{
-            "type": "task_sequence_variable", "name": "SyntheticName",
-            "value": "ADEnum-CRED1-Test-Secret"}]},
-    )
-    findings_section = report.split("Findings\n", 1)[1]
-    assert "Unique secrets" not in findings_section
-    assert "Unique secrets ..... 1" not in findings_section
-    assert "Recovered credential" in report
-    assert report.count("ADEnum-CRED1-Test-Secret") == 1
-    assert "SyntheticName" in report
+def test_results_text_renders_pxe_states_compactly(tmp_path):
+    findings = [
+        {"category": "SCCM", "rule": "PXE", "title": "PXE VULNERABLE — 192.0.2.41",
+         "affected_object": "192.0.2.41", "status": "confirmed",
+         "sources": [{"source": "PXEThief", "observed": True}],
+         "evidence": {"dp": "192.0.2.41", "site": "P01", "state": "VULNERABLE",
+                      "recovered_count": 2, "source": "PXEThief"}},
+        {"category": "SCCM", "rule": "PXE", "title": "PXE — 192.0.2.42",
+         "affected_object": "192.0.2.42", "status": "not-vulnerable",
+         "sources": [{"source": "PXEThief", "observed": True}],
+         "evidence": {"dp": "192.0.2.42", "site": "P01", "state": "NOT VULNERABLE",
+                      "recovered_count": 0, "source": "PXEThief"}},
+        {"category": "SCCM", "rule": "PXE", "title": "PXE — 192.0.2.43",
+         "affected_object": "192.0.2.43", "status": "not-tested",
+         "sources": [], "evidence": {"dp": "192.0.2.43", "state": "NOT TESTED",
+                                      "reason": "PXEThief unavailable", "source": ""}},
+    ]
+    report = _results_text("SCCM.LAB", "dc.sccm.lab", {}, DomainInventory(), [], [],
+                           findings, ScanWorkspace(tmp_path, "sccm.lab"))
+    section = report.split("------------[ SCCM ]------------\n", 1)[1].split("Workspace", 1)[0]
 
-
-def test_cred1_summary_is_grouped_compact_and_preserves_data():
-    item = {
-        "dp": "192.0.2.41", "site_code": "EX1", "interface": "eth0",
-        "wds": "CONFIRMED", "pxe": "CONFIRMED", "tftp": "CONFIRMED",
-        "boot_var": "RECOVERED", "media_identity": "RECOVERED",
-        "assignment": "RECEIVED", "policies": 5, "boot_file": "UNKNOWN",
-        "media_protection": "UNKNOWN", "secret_inspection": "COMPLETE",
-        "credentials": [{"type": "task_sequence_variable", "name": "ExampleVariable",
-                         "value": "ExampleRecoveredSecret"}],
-        "operator_password": "OperatorOnlySecret",
-    }
-    original = copy.deepcopy(item)
-    lines = _cred1_summary_lines(item, width=80)
-    output = "\n".join(lines)
-
-    assert "PXE / WDS" in output
-    assert "Inspection" in output
-    assert "Recovered credential" in output
-    assert "ExampleRecoveredSecret" in output
-    assert "OperatorOnlySecret" not in output
-    assert output.count("Unique secrets") == 1
-    assert "...." not in output
-    assert item == original
-
-
-def test_results_text_uses_compact_cred1_renderer(tmp_path):
-    report = _results_text(
-        "EXAMPLE.TEST", "dc1.example.test", {}, DomainInventory(), [], [], [],
-        ScanWorkspace(tmp_path, "example.test"),
-        cred1={"dp": "192.0.2.41", "site_code": "EX1", "interface": "eth0",
-               "wds": "CONFIRMED", "pxe": "CONFIRMED", "tftp": "CONFIRMED",
-               "boot_var": "RECOVERED", "media_identity": "RECOVERED",
-               "assignment": "RECEIVED", "policies": 5,
-               "boot_file": "UNKNOWN", "media_protection": "UNKNOWN",
-               "secret_inspection": "COMPLETE", "credentials": [{
-                   "type": "task_sequence_variable", "name": "ExampleVariable",
-                   "value": "ExampleRecoveredSecret"}],
-        },
-    )
-    section = report.split("SCCM CRED-1 PXE\n", 1)[1].split("\nFindings", 1)[0]
-
-    assert "  Distribution Point  192.0.2.41" in section
-    assert "  PXE / WDS" in section
-    assert "  Inspection" in section
-    assert "ExampleRecoveredSecret" in section
+    assert "PXE VULNERABLE — 192.0.2.41" in section
+    assert "State   NOT VULNERABLE" in section
+    assert "State   NOT TESTED" in section and "Reason  PXEThief unavailable" in section
+    assert "Recovered" in section
+    assert "Source" in section
+    assert "Raw PXEThief" not in section.lstrip()
     assert "...." not in section
 
 

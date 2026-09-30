@@ -98,8 +98,6 @@ system_package_name() {
     debian:*) printf '%s\n' "$logical_package" ;;
     arch:python3|arch:python3-dev|arch:python3-venv) printf '%s\n' python ;;
     arch:libkrb5-dev) printf '%s\n' krb5 ;;
-    arch:golang-go) printf '%s\n' go ;;
-    arch:libpcap-dev) printf '%s\n' libpcap ;;
     arch:rustc|arch:cargo) printf '%s\n' rust ;;
     arch:git) printf '%s\n' git ;;
     arch:build-essential) printf '%s\n' base-devel ;;
@@ -124,9 +122,6 @@ package_installed() {
       pacman -Q "$package" >/dev/null 2>&1
       ;;
   esac
-}
-libpcap_dev_installed() {
-  package_installed "$(system_package_name libpcap-dev)"
 }
 add_system_package() {
   local logical_package="$1" package existing
@@ -225,8 +220,6 @@ fi
 [[ -n "$python_header" && -f "$python_header" ]] || add_system_package python3-dev
 [[ -f /usr/include/krb5.h ]] || add_system_package libkrb5-dev
 if [[ "$mode" != minimal ]] && ! command -v kinit >/dev/null 2>&1; then add_system_package krb5-user; fi
-if [[ "$mode" != minimal ]] && ! command -v go >/dev/null 2>&1; then add_system_package golang-go; fi
-if [[ "$mode" != minimal ]] && ! libpcap_dev_installed; then add_system_package libpcap-dev; fi
 if ((${#system_packages[@]})); then
   command -v sudo >/dev/null 2>&1 || { fail "Missing system packages: ${system_packages[*]} (sudo unavailable)"; exit 1; }
   CURRENT_STAGE="Checking sudo access"
@@ -263,46 +256,30 @@ if [[ "$mode" != minimal ]]; then
   # Impacket and supporting scripts come with AD-Enum core.
   install_script_tool NetworkHound https://github.com/MorDavid/NetworkHound.git 47ea549fef664ad29b1239b370c1220a6fffa1e0 NetworkHound.py
   install_script_tool RelayKing-Depth https://github.com/depthsecurity/RelayKing-Depth.git 74e15350ff3610ed083d8886fa804f84c9a66238 relayking.py
-  if command -v go >/dev/null 2>&1; then
-    say "Installing CinderPath CRED-1 adapter"
-    cinderpath_bin="$repo_dir/.venv/bin/cinderpath"
-    cinderpath_source="$repo_dir/.cache/CinderPath"
-    cinderpath_url="https://github.com/Lmarkussen/CinderPath.git"
-    cinderpath_checkout_ok=0
-    if [[ -d "$cinderpath_source/.git" ]] && git -C "$cinderpath_source" rev-parse --is-inside-work-tree >/dev/null 2>&1 && git -C "$cinderpath_source" remote get-url origin >/dev/null 2>&1; then
-      cinderpath_checkout_ok=1
-    elif [[ -e "$cinderpath_source" ]]; then
-      warn "Removing incomplete installer-managed CinderPath checkout"
-      rm -rf -- "$cinderpath_source"
-    fi
-    mkdir -p "$(dirname "$cinderpath_source")"
-    if [[ ! -f /usr/include/pcap/pcap.h && ! -f /usr/include/pcap.h ]]; then
-      CURRENT_STAGE="Checking CinderPath libpcap development headers"
-      fail "CinderPath build prerequisite missing: libpcap development headers (install $(system_package_name libpcap-dev))"
-      exit 1
-    fi
-    if (( cinderpath_checkout_ok )); then
-      run_logged "Updating CinderPath source" timeout 120s git -C "$cinderpath_source" remote set-url origin "$cinderpath_url"
-      run_logged "Fetching current CinderPath source" timeout 120s git -C "$cinderpath_source" fetch --depth 1 origin
-      run_logged "Selecting current CinderPath source" git -C "$cinderpath_source" reset --hard FETCH_HEAD
-    else
-      run_logged "Cloning CinderPath from public GitHub" timeout 120s git clone --depth 1 "$cinderpath_url" "$cinderpath_source"
-    fi
-    ok "CinderPath source available"
-    run_logged "Building CinderPath" timeout 900s go -C "$cinderpath_source" build -o "$cinderpath_bin" ./cmd/cinderpath
-    ok "CinderPath built"
-    CURRENT_STAGE="Checking CinderPath CRED-1 support"
-    if "$cinderpath_bin" assess CRED-1 --help >/dev/null 2>&1; then
-      ok "CRED-1 structured output supported"
-    else
-      fail "CinderPath startup failed: assess CRED-1 --help"
-      exit 1
-    fi
-    say "Building bounded SCCM PXE helper"
-    run_logged "Building bounded SCCM PXE helper" timeout 900s go -C helpers/sccm_pxe build -o "$repo_dir/.venv/bin/ad-enum-sccm-pxe" .
-    ok "Bounded SCCM PXE helper built"
+  say "Installing PXEThief (required PR #11 checkout)"
+  pxethief_root="$repo_dir/.cache/PXEThief"
+  pxethief_url="https://github.com/MWR-CyberSec/PXEThief.git"
+  mkdir -p "$(dirname "$pxethief_root")"
+  if [[ -d "$pxethief_root/.git" ]] && git -C "$pxethief_root" remote get-url origin >/dev/null 2>&1; then
+    run_logged "Fetching PXEThief source" timeout 300s git -C "$pxethief_root" fetch origin
   else
-    fail "Go is unavailable; required CinderPath and SCCM helper cannot be built"
+    if [[ -e "$pxethief_root" ]]; then
+      warn "Removing incomplete installer-managed PXEThief checkout"
+      rm -rf -- "$pxethief_root"
+    fi
+    run_logged "Cloning PXEThief from public GitHub" timeout 300s git clone "$pxethief_url" "$pxethief_root"
+  fi
+  # PR #11 is required; the default branch does not work for these targets.
+  run_logged "Fetching required PXEThief PR #11" timeout 300s git -C "$pxethief_root" fetch origin pull/11/head
+  run_logged "Selecting PXEThief PR #11" git -C "$pxethief_root" checkout -B pr-11 FETCH_HEAD
+  ok "PXEThief PR #11 source available"
+  run_logged "Creating PXEThief environment" "$PYTHON_BIN" -m venv "$pxethief_root/.venv"
+  run_logged "Installing PXEThief dependencies" timeout 900s "$pxethief_root/.venv/bin/python" -m pip install -r "$pxethief_root/requirements.txt"
+  CURRENT_STAGE="Checking PXEThief startup"
+  if "$pxethief_root/.venv/bin/python" -c "import scapy, tftpy, lxml, requests, Crypto, certipy" >/dev/null 2>&1; then
+    ok "PXEThief environment ready"
+  else
+    fail "PXEThief startup failed: dependency import check"
     exit 1
   fi
 fi

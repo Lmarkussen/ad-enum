@@ -261,31 +261,34 @@ grained password policies and exceptions before judging the effective control.
 Enable appropriate complexity and length requirements, use stronger controls
 for privileged/service identities, and review exceptions and policy precedence.
 
-## SCCM / MECM and CRED-1
+## SCCM / MECM and PXE exposure
 
 ### What it means
 
-AD-Enum uses CinderPath as its specialized CRED-1 adapter. A confirmed `CRED-1`
-result means PXE/SCCM policy material allowed credential recovery. The recovered
-target credential is operator evidence and must be treated as credential
-exposure.
+AD-Enum validates discovered SCCM/MECM distribution points with PXEThief
+(pinned PR #11). `PXE VULNERABLE` means the DP answered the PXE boot request and
+the boot media could be used without a configured media password, so media
+variables and any embedded credentials could be recovered. `NOT VULNERABLE`
+means the media is protected by a configured password. `NOT TESTED` means the
+validation could not run (for example, the DP did not answer, or packet capture
+was not permitted).
 
 ### Why it matters
 
-Credentials embedded in task-sequence or policy material may grant access well
-beyond the deployment workflow, depending on the account and scope.
+Credentials embedded in task-sequence or media policy material may grant access
+well beyond the deployment workflow, depending on the account and scope.
 
 ### Safe validation
 
-Reproduce the read-only CRED-1 assessment against the reported distribution
-point and confirm the same policy/credential exposure. Do not use the recovered
-credential to authenticate elsewhere merely to prove impact.
+Reproduce the PXE validation against the reported distribution point with
+PXEThief and confirm the same media exposure. Do not use a recovered credential
+to authenticate elsewhere merely to prove impact.
 
 ### Remediation
 
-Remove exposed credentials from task-sequence and policy material, rotate every
-recovered credential, review PXE/SCCM exposure and affected task sequences, and
-confirm that old policy material no longer exposes the secret.
+Require a strong media password (or disable PXE for unknown computers), remove
+exposed credentials from task-sequence and policy material, rotate every
+recovered credential, and confirm that old media no longer exposes the secret.
 
 ## Authenticated access and service authorization
 

@@ -57,15 +57,16 @@ def test_doctor_checks_required_options_and_timeout(monkeypatch):
     assert doctor._tool("NetworkHound.py")[0] == "FAILED"
 
 
-@pytest.mark.parametrize("missing", [None, "NetworkHound.py", "relayking.py", "cinderpath"])
+@pytest.mark.parametrize("missing", [None, "NetworkHound.py", "relayking.py"])
 def test_doctor_required_visibility_and_exit(monkeypatch, capsys, missing):
     monkeypatch.setattr(doctor, "find_executable", lambda name: None if name == missing else "/tool")
+    monkeypatch.setattr(doctor, "pxethief_capability", lambda: {"status": "PASS", "detail": "fixture"})
     monkeypatch.setattr(doctor.importlib.util, "find_spec", lambda _: True)
     monkeypatch.setattr(doctor.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(
         a, 0, " ".join(flag for _, _, _, flags in doctor.REQUIRED_TOOLS for flag in flags), ""))
     assert doctor.report() == (1 if missing else 0)
     output = capsys.readouterr().out
-    assert "NetworkHound" in output and "RelayKing" in output and "CinderPath" in output
+    assert "NetworkHound" in output and "RelayKing" in output and "PXEThief" in output
     if missing:
         assert "NOT AVAILABLE" in output and "default installation is incomplete" in output
 
@@ -109,7 +110,7 @@ def test_package_manager_boundaries(tmp_path, family, expected, forbidden):
 package_manager_available() {{ return 0; }}
 run_logged() {{ shift; printf '%s ' "$@"; printf '\\n'; }}
 system_packages=()
-for package in python3 python3-dev python3-venv libkrb5-dev golang-go libpcap-dev git build-essential dnsutils rustc cargo; do
+for package in python3 python3-dev python3-venv libkrb5-dev git build-essential dnsutils rustc cargo; do
   add_system_package "$package"
 done
 install_system_packages
@@ -119,16 +120,18 @@ install_system_packages
     assert forbidden not in result.stdout
     assert "pacman -Sy " not in result.stdout
     if family == "arch":
-        assert "base-devel bind" in result.stdout and "libpcap" in result.stdout
+        assert "base-devel bind" in result.stdout
         assert "python3" not in result.stdout
     else:
-        assert "build-essential dnsutils" in result.stdout and "libpcap-dev" in result.stdout
+        assert "build-essential dnsutils" in result.stdout
 
 
 def test_default_install_contains_required_public_sources_and_doctor_gate():
     assert "https://github.com/MorDavid/NetworkHound.git" in INSTALLER
     assert "https://github.com/depthsecurity/RelayKing-Depth.git" in INSTALLER
-    assert "https://github.com/Lmarkussen/CinderPath.git" in INSTALLER
+    assert "https://github.com/MWR-CyberSec/PXEThief.git" in INSTALLER
+    assert "pull/11/head" in INSTALLER and "checkout -B pr-11 FETCH_HEAD" in INSTALLER
+    assert "CinderPath" not in INSTALLER and "ad-enum-sccm-pxe" not in INSTALLER
     assert 'PIPX_BIN_DIR="$repo_dir/.venv/bin"' in INSTALLER
     assert "ensurepath" not in INSTALLER and "pipx install --force" not in INSTALLER
     assert 'run_logged "Verifying required scan tools with doctor"' in INSTALLER

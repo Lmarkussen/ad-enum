@@ -4,6 +4,7 @@ import subprocess
 import sys
 from pathlib import Path
 from .core.planner import find_executable
+from .pxethief_adapter import pxethief_capability
 
 # Check the command interfaces used by the existing adapters, without targets.
 REQUIRED_TOOLS = (
@@ -11,8 +12,6 @@ REQUIRED_TOOLS = (
     ("LDAPDomainDump", "ldapdomaindump", ("--help",), ()),
     ("NetExec", "nxc", ("smb", "--help"), ()),
     ("Impacket", "smbclient.py", ("--help",), ()),
-    ("CinderPath", "cinderpath", ("assess", "CRED-1", "--help"), ("--format",)),
-    ("SCCM PXE helper", "ad-enum-sccm-pxe", ("--help",), ()),
     ("NetworkHound", "NetworkHound.py", ("--help",),
      ("--dc", "--domain", "--user", "--output", "--dns", "--kerberos", "--password")),
     ("RelayKing", "relayking.py", ("--help",),
@@ -60,6 +59,10 @@ def report():
         status, detail = _tool(command, args, flags)
         healthy &= status == "PASS"
         print(f"  {label:<21} {status} ({detail})")
+    # PXEThief is an isolated SCCM/PXE validation tool, not a PATH command.
+    pxethief = pxethief_capability()
+    healthy &= pxethief["status"] == "PASS"
+    print(f"  {'PXEThief':<21} {pxethief['status']} ({pxethief['detail']})")
     # Protocol help loads argument definitions only. Import the implementations
     # with NetExec's isolated interpreter to catch missing runtime dependencies.
     nxc = find_executable("nxc")

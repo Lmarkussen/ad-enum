@@ -11,8 +11,8 @@ operator does not have to search every tool's output directory.
 ## Features
 
 - AD inventory, AD CS, Kerberos, delegation, GPO/SYSVOL, ACL, SMB, LDAP, and domain security posture
-- SCCM/MECM and relay-exposure reconnaissance, including automatic CRED-1
-  assessment through the CinderPath adapter
+- SCCM/MECM and relay-exposure reconnaissance, including PXE-enabled
+  distribution-point validation through PXEThief
 - DNS/host mapping and cross-source identity correlation
 - Discovered credential/secret evidence with protected scanner credentials
 - Current-scan-identity access checks and explicit coverage states
@@ -27,10 +27,10 @@ cd ad-enum
 ```
 
 The default install provisions all required scan tools, including NetworkHound,
-RelayKing, and CinderPath, and verifies them with credential-free startup checks.
-Tools stay under `.venv/` and `.cache/`; no PATH changes or second setup step
-are needed. Use `--verbose` for installer diagnostics. Packet-capture
-capabilities for CinderPath remain explicit and opt-in at runtime.
+RelayKing, and PXEThief (pinned PR #11), and verifies them with credential-free
+startup checks. Tools stay under `.venv/` and `.cache/`; no PATH changes or
+second setup step are needed. Use `--verbose` for installer diagnostics.
+Packet-capture capabilities for PXEThief remain explicit and operator-managed.
 
 ## Quick start
 
@@ -44,11 +44,11 @@ Useful options include `--verbose`, `--debug`, `--tool-output`, `--no-color`, `-
 password on a command line can expose it through shell history or process
 inspection; omit `-p` to use the supported interactive prompt.
 
-When SCCM distribution-point evidence is discovered, CRED-1 runs
-automatically through CinderPath; `--cred1-dp` is only an explicit target
-override for debugging. CRED-1 requires a suitable local Ethernet/PXE capture
-path and packet-capture capabilities, so a routed tunnel may be usable for
-LDAP/SMB while remaining unsuitable for PXE.
+When SCCM discovery identifies a distribution point or site system, PXE
+exposure is validated through PXEThief; `--pxe-dp` is only an explicit target
+override for debugging. PXEThief needs a suitable local Ethernet/broadcast path
+and packet-capture privileges, so a routed tunnel may be usable for LDAP/SMB
+while remaining unsuitable for PXE.
 
 Use `--html-out report.html` for an optional standalone browser-readable report.
 The default `results.txt` remains authoritative. `--tool-output` is an opt-in,
@@ -102,8 +102,8 @@ Module directories retain evidence and source artifacts; `scans/` preserves
 historical snapshots.
 
 When a target credential or secret is confidently discovered, AD-Enum displays
-that evidence for the authorized operator. This includes deterministic,
-read-only CRED-1 material recovered by CinderPath. It never displays or
+that evidence for the authorized operator. This includes PXE media material
+recovered by PXEThief during authorized PXE validation. It never displays or
 persists the scanner's supplied password, temporary Kerberos material, tickets,
 or caches.
 
@@ -111,9 +111,9 @@ or caches.
 
 Use AD-Enum only for authorized assessments, defensive review, and disposable
 lab environments. AD-Enum is reconnaissance and enumeration only: it does not
-perform spraying, password cracking, active relay, coercion, poisoning,
-deployment execution, or exploitation. CRED-1 is limited to the bounded,
-read-only CinderPath PXE/media workflow and deterministic client-side decoding.
+perform spraying, password cracking, active relay, coercion, poisoning, or
+deployment execution. SCCM/PXE validation is delegated to PXEThief and is
+strictly limited to the discovered distribution points in scope.
 
 ## Development
 

@@ -202,36 +202,43 @@ def probe_management_points(management_points, timeout=5):
     return results
 
 
-def cred1_candidates(result):
-    """Return bounded SCCM DP/MP targets observed by SCCM discovery.
+def pxe_candidates(result):
+    """Return bounded, deterministic PXE/DP candidates from SCCM discovery.
 
-    CRED-1's supported CinderPath assessment accepts a distribution point or
-    management point. Some environments publish the MP and omit a separate
-    DP object even though the host serves both roles, so a confirmed MP is a
-    valid, evidence-backed fallback; this never invents a host or scans a
-    generic SCCM candidate.
+    SCCM commonly co-locates the management point, distribution point, and
+    PXE/WDS role on a single site system, and the passive netboot SCP
+    attributes are not always published.  Candidates are therefore drawn from
+    discovered distribution points first and then from confirmed management
+    points, each tagged with the discovery basis; arbitrary hosts are never
+    invented or scanned.
     """
     result = result if isinstance(result, dict) else {}
-    out = []
-    observed = list(result.get("distribution_points", []) or [])
-    observed.extend(result.get("management_points", []) or [])
-    for item in observed:
+    observed = [(item, "distribution-point") for item in (result.get("distribution_points", []) or [])]
+    observed += [(item, "management-point") for item in (result.get("management_points", []) or [])]
+    pxe_state = str((result.get("pxe") or {}).get("status", "")).upper()
+    candidates, seen = [], set()
+    for item, basis in observed:
         if not isinstance(item, dict):
             continue
         host = item.get("fqdn") or item.get("host") or item.get("name")
         addresses = item.get("ip_addresses") or item.get("ips") or []
         if isinstance(addresses, str):
             addresses = [addresses]
+        target = host
         for address in addresses:
             try:
                 if ipaddress.ip_address(str(address)).version == 4:
-                    host = str(address)
+                    target = str(address)
                     break
             except ValueError:
                 continue
-        if host and host not in out:
-            out.append(host)
-    return out
+        if not target or str(target).casefold() in seen:
+            continue
+        seen.add(str(target).casefold())
+        candidates.append({"dp": str(target), "host": str(host or target),
+                           "site_code": item.get("site_code", ""), "basis": basis,
+                           "pxe_evidence": pxe_state == "ENABLED"})
+    return sorted(candidates, key=lambda c: (c["site_code"], c["dp"].casefold()))
 
 
 def normalize_relayking(data):

@@ -8,10 +8,11 @@ view without progress chatter, raw tool output, or ANSI escape sequences.
 target credentials/secrets. Scanner authentication credentials and temporary
 Kerberos state are never written there.
 
-For SCCM CRED-1, the normalized finding includes the recovered target
-credential and its DP/site/policy provenance when present. Temporary CinderPath
-media keys, PFX material, and other operational crypto material are not report
-artifacts.
+For SCCM/PXE validation, the normalized finding records the distribution point,
+state, and recovered-item count. Recovered target credentials and their
+provenance are retained in structured evidence and the credential artifacts;
+raw PXEThief stdout and intermediate crypto media stay under
+`SCCM/pxethief/raw/` and are never part of the console report.
 
 Module directories contain normalized inventory, findings, provenance, and
 source artifacts. `vulnerabilities/` contains active normalized findings, while

@@ -141,29 +141,22 @@ def normalize_sccm_capabilities(data):
     return result
 
 
-def normalize_cred1_evidence(data):
-    """Normalize safe CRED-1 evidence without decrypting protected media."""
+def normalize_pxe_validation(data):
+    """Normalize one bounded PXEThief PXE validation result."""
     data = data if isinstance(data, dict) else {}
+    credentials = list(data.get("recovered", data.get("credentials", [])) or [])
+    state = str(data.get("state", data.get("status", "NOT TESTED"))).upper()
     return {
         "dp": data.get("dp", data.get("host", "")),
-        "status": str(data.get("status", "PARTIAL")).upper(),
+        "state": state,
+        "status": state,
         "site_code": data.get("site_code", data.get("site", "")),
         "interface": data.get("interface", ""),
-        "pxe": str(data.get("pxe", "UNKNOWN")).upper(),
-        "wds": str(data.get("wds", "UNKNOWN")).upper(),
-        "tftp": str(data.get("tftp", "UNKNOWN")).upper(),
-        "boot_file": data.get("boot_file", data.get("BootFileName", "")),
-        "boot_var": str(data.get("boot_var", "UNKNOWN")).upper(),
-        "media_identity": str(data.get("media_identity", "UNKNOWN")).upper(),
-        "assignment": str(data.get("assignment", "UNKNOWN")).upper(),
-        "certificate": str(data.get("certificate", "UNKNOWN")).upper(),
-        "artifacts": list(data.get("artifacts", []) or []),
-        "media_protection": str(data.get("media_protection", "UNKNOWN")).upper(),
-        "secret_exposure": str(data.get("secret_exposure", "UNKNOWN")).upper(),
-        "secret_inspection": data.get("secret_inspection", "NOT ATTEMPTED"),
-        "credentials": list(data.get("credentials", data.get("recovered_secrets", [])) or []),
-        "stages": data.get("stages", {}),
-        "policies": data.get("policies", data.get("task_sequence_policies", 0)),
+        "media_file": data.get("media_file", ""),
+        "bcd_file": data.get("bcd_file", ""),
+        "recovered_count": data.get("recovered_count", len(credentials)),
+        "credentials": credentials,
+        "source": data.get("source", ""),
         "errors": list(data.get("errors", []) or []),
         "sources": list(data.get("sources", []) or []),
         "evidence": list(data.get("evidence", []) or []),
@@ -175,7 +168,7 @@ def sccm_technique_coverage():
     return {
         "RECON-1": "PARTIAL", "RECON-2": "PARTIAL", "RECON-3": "PARTIAL",
         "RECON-4": "PARTIAL", "RECON-5": "PARTIAL", "RECON-6": "PARTIAL",
-        "RECON-7": "PARTIAL", "CRED-1": "PARTIAL",
+        "RECON-7": "PARTIAL", "PXE": "PARTIAL",
     }
 
 

@@ -6,7 +6,7 @@ from ad_enum.sccm_models import (SCCMArtifactLimits, bounded_artifact_candidates
                                   normalize_mp_metadata, normalize_pxe_evidence,
                                   normalize_dp_content, normalize_task_sequences,
                                   normalize_sccm_topology, normalize_sccm_capabilities,
-                                  normalize_cred1_evidence, sccm_technique_coverage)
+                                  normalize_pxe_validation, sccm_technique_coverage)
 
 
 def _model():
@@ -71,19 +71,20 @@ def test_html_shows_authenticated_access():
     assert "AUTHENTICATED" in report
 
 
-def test_html_shows_cred1_finding_credential_details():
+def test_html_shows_pxe_finding_without_dumping_raw_tool_output():
     model = _model()
-    model["findings"] = [{"category": "SCCM", "rule": "CRED-1",
-                           "title": "CRED-1 — PXE boot media exposes credential material",
-                           "status": "confirmed", "affected_object": "10.0.0.41",
-                           "evidence": {"dp": "10.0.0.41", "site": "P01", "policies": 5,
-                                        "unique_secrets": 1, "type": "task_sequence_variable",
-                                        "name": "SyntheticName", "value": "ADEnum-CRED1-Test-Secret",
-                                        "source_policy": "Policy-A"}}]
+    model["findings"] = [{"category": "SCCM", "rule": "PXE", "title": "PXE VULNERABLE — 192.0.2.41",
+                           "status": "confirmed", "affected_object": "192.0.2.41",
+                           "sources": [{"source": "PXEThief", "observed": True}],
+                           "evidence": {"dp": "192.0.2.41", "site": "P01", "state": "VULNERABLE",
+                                        "recovered_count": 1, "source": "PXEThief",
+                                        "recovered": [{"name": "NetworkAccessAccount",
+                                                       "username": "EXAMPLE\\svc-naa",
+                                                       "value": "SyntheticSecret"}]}}]
     report = render_html(model)
-    assert "SyntheticName" in report
-    assert "ADEnum-CRED1-Test-Secret" in report
-    assert "Policy-A" in report
+    assert "PXE VULNERABLE — 192.0.2.41" in report
+    assert "PXEThief" in report
+    assert "SyntheticSecret" in report  # structured evidence is retained in HTML detail
 
 
 def test_installer_uses_explicit_netexec_package_path():
@@ -91,13 +92,13 @@ def test_installer_uses_explicit_netexec_package_path():
     assert "git+https://github.com/Pennyw0rth/NetExec.git@" in installer
 
 
-def test_cred1_model_is_safe_and_never_implies_decryption():
-    result = normalize_cred1_evidence({"dp": "MECM", "BootFileName": "pxeboot.n12",
-                                       "media_protection": "protected", "artifacts": [".boot.bcd"]})
-    assert result["boot_file"] == "pxeboot.n12"
-    assert result["media_protection"] == "PROTECTED"
-    assert result["secret_inspection"] == "NOT ATTEMPTED"
-    assert sccm_technique_coverage()["CRED-1"] == "PARTIAL"
+def test_pxe_validation_model_is_bounded_and_source_truthful():
+    result = normalize_pxe_validation({"dp": "192.0.2.41", "state": "vulnerable",
+                                       "source": "PXEThief",
+                                       "recovered": [{"name": "NetworkAccessAccount", "value": "s"}]})
+    assert result["state"] == "VULNERABLE" and result["dp"] == "192.0.2.41"
+    assert result["recovered_count"] == 1 and result["source"] == "PXEThief"
+    assert sccm_technique_coverage()["PXE"] == "PARTIAL"
 
 
 def test_sccm_artifact_policy_is_bounded():

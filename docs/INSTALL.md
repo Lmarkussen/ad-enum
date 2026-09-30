@@ -2,11 +2,11 @@
 
 AD-Enum targets Linux with Python 3.11 or newer. The installer creates
 `.venv`, installs the project without system `pip`, installs the default
-external collectors through supported package mechanisms, and builds the
-CinderPath CRED-1 adapter. NetworkHound and RelayKing are installed from public
-HTTPS source checkouts at tested revisions, with isolated environments under
-`.cache/` and launchers under `.venv/bin/`. Doctor verifies every required tool
-and returns a failure if one is missing or cannot start.
+external collectors through supported package mechanisms, and provisions the
+PXEThief SCCM/PXE validation tool. NetworkHound, RelayKing, and PXEThief are
+installed from public HTTPS source checkouts at tested revisions, with isolated
+environments under `.cache/`. Doctor verifies every required tool and returns a
+failure if one is missing or cannot start.
 
 For a fresh checkout:
 
@@ -16,11 +16,14 @@ cd ad-enum
 ./install.sh
 ```
 
-The default path installs required Linux build dependencies, including
-`libpcap-dev` on Debian/Kali or `libpcap` on Arch, before building CinderPath.
-It does not silently grant packet-capture capabilities. When SCCM/PXE evidence
-is found, AD-Enum checks the local interface and capabilities and can offer an
-explicit, operator-approved setup of CinderPath.
+The PXEThief checkout is pinned to pull request #11
+(`pull/11/head:pr-11`), which is required for the supported SCCM/PXE targets;
+the installer never falls back to the default branch. PXEThief runs in its own
+environment under `.cache/PXEThief/.venv`, so it does not contaminate the
+project `.venv`. The installer does not silently grant packet-capture
+capabilities: a PXE validation that needs raw sockets reports `NOT TESTED`
+unless AD-Enum runs with the required privileges (root or
+`CAP_NET_RAW`/`CAP_NET_ADMIN`).
 
 ```bash
 ./install.sh                 # core plus default collectors

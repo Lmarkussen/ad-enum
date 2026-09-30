@@ -1,5 +1,4 @@
 import argparse
-import hashlib
 import sys
 import ipaddress
 import re
@@ -20,7 +19,7 @@ from .external import execute_external
 from .inventory import (native_inventory, DomainInventory, build_targets, sensitive_description,
                         parse_netexec_smb, extract_attribute_secret, is_standard_admin_share)
 from .sccm import (discover as discover_sccm, normalize_relayking,
-                   probe_management_points, cred1_candidates)
+                   probe_management_points, pxe_candidates)
 from .network import build_dns_map, dns_map_text, dns_map_host_count
 from .dns_enum import normalize_zones, normalize_records, merge_into_dns_map, normalize_password_settings
 from .gpo import normalize_gpos, collect_sysvol, collect_netlogon, inspect_file, parse_security_settings
@@ -38,8 +37,7 @@ from .recon import (normalize_mssql, normalize_dfs, normalize_services,
 from .service_probe import DEFAULT_SERVICES, probe_known_services
 from .access import from_netexec_hosts, merge_access, filter_redundant_access_targets
 from .adapters.netexec import NetExecAdapter
-from .cinderpath_adapter import run_cinderpath_cred1, cinderpath_path
-from .cred1_runtime import check_cred1_runtime, fix_cinderpath_capabilities
+from .pxethief_adapter import run_pxethief, pxethief_capability
 
 
 CATEGORY_ORDER = ("ADCS", "POLICY", "KERBEROS", "ACCOUNT", "DELEGATION",
@@ -69,48 +67,6 @@ def _compact_field_lines(fields, *, indent="  ", width=None, max_label_width=20,
         first = style_value(chunks[0]) if style_value else chunks[0]
         lines.append(f"{indent}{label:<{label_width}}  {first}")
         lines.extend(f"{continuation}{style_value(chunk) if style_value else chunk}" for chunk in chunks[1:])
-    return lines
-
-
-def _cred1_summary_lines(item, *, indent="  ", width=None, secret_style=None):
-    """Render the human-readable CRED-1 summary without changing its data."""
-    evidence = item or {}
-    lines = _compact_field_lines([
-        ("Distribution Point", evidence.get("dp", "unknown")),
-        ("Site", evidence.get("site_code", "UNKNOWN")),
-        ("Interface", evidence.get("interface", "UNKNOWN")),
-    ], indent=indent, width=width)
-    lines.extend(["", f"{indent}PXE / WDS"])
-    lines.extend(_compact_field_lines([
-        ("WDS reply", evidence.get("wds", "UNKNOWN")),
-        ("PXE", evidence.get("pxe", "UNKNOWN")),
-        ("TFTP", evidence.get("tftp", "UNKNOWN")),
-        ("boot.var", evidence.get("boot_var", "UNKNOWN")),
-        ("Media identity", evidence.get("media_identity", "UNKNOWN")),
-        ("Assignment", evidence.get("assignment", "UNKNOWN")),
-        ("Policies", evidence.get("policies", 0)),
-    ], indent=indent + "  ", width=width))
-    lines.extend(["", f"{indent}Inspection"])
-    lines.extend(_compact_field_lines([
-        ("Boot metadata", evidence.get("boot_file") or "UNKNOWN"),
-        ("Media protection", evidence.get("media_protection", "UNKNOWN")),
-        ("Secret inspection", evidence.get("secret_inspection", "NOT ATTEMPTED")),
-        ("Unique secrets", len(evidence.get("credentials", []) or [])),
-    ], indent=indent + "  ", width=width))
-    credentials = evidence.get("credentials", []) or []
-    if credentials:
-        lines.extend(["", f"{indent}Recovered credential"])
-        for index, secret in enumerate(credentials):
-            if index:
-                lines.append("")
-            fields = [("Type", secret.get("type", "other")), ("Name", secret.get("name", ""))]
-            if secret.get("username"):
-                fields.append(("Username", secret["username"]))
-            fields.append(("Password", secret.get("value", secret.get("password", ""))))
-            if secret.get("source_policy"):
-                fields.append(("Source", secret["source_policy"]))
-            lines.extend(_compact_field_lines(fields, indent=indent + "  ", width=width,
-                                              value_style=secret_style, highlight_labels={"Password"}))
     return lines
 
 
@@ -563,34 +519,6 @@ def _finding_detail_lines(item, *, indent="    ", width=None, status_override=No
                        {"gpo-cleartext-credential", "gpp-cpassword"} else None)
         return _compact_field_lines(fields, indent=indent, width=width, value_style=value_style,
                                     highlight_labels={"Value", "cpassword"})
-    if item.get("category") == "SCCM" and item.get("rule") == "CRED-1":
-        lines = _compact_field_lines([
-            ("Distribution Point", evidence.get("dp", item.get("affected_object", "unknown"))),
-            ("Site", evidence.get("site", "UNKNOWN")),
-            ("Interface", evidence.get("interface", "UNKNOWN")),
-        ], indent=indent, width=width)
-        lines.extend(["", f"{indent}PXE / WDS"])
-        lines.extend(_compact_field_lines([
-            ("WDS reply", evidence.get("wds", "UNKNOWN")),
-            ("boot.var", evidence.get("boot_var", "UNKNOWN")),
-            ("Media identity", evidence.get("media_identity", "UNKNOWN")),
-            ("Assignment", evidence.get("assignment", "UNKNOWN")),
-            ("Policies", evidence.get("policies", 0)),
-        ], indent=indent + "  ", width=width))
-        lines.extend(["", f"{indent}Inspection"])
-        # The CRED-1 section owns the aggregate count.  Keep the finding's
-        # status here without repeating that same normalized value below it.
-        lines.extend(_compact_field_lines([("Status", status)], indent=indent + "  ", width=width))
-        lines.extend(["", f"{indent}Recovered credential"])
-        fields = [("Type", evidence.get("type", "other")), ("Name", evidence.get("name", ""))]
-        if evidence.get("username"):
-            fields.append(("Username", evidence["username"]))
-        fields.append(("Password", evidence.get("value", "")))
-        if evidence.get("source_policy"):
-            fields.append(("Source", evidence["source_policy"]))
-        lines.extend(_compact_field_lines(fields, indent=indent + "  ", width=width,
-                                          value_style=secret_style, highlight_labels={"Password"}))
-        return lines
     if status.lower() in {"single-source", "corroborated"}:
         return []
     return _compact_field_lines([("Status", status)], indent=indent, width=width) if status else []
@@ -747,37 +675,35 @@ def _relay_finding_lines(items, *, title_style=None, host_identities=None, width
 
 def _sccm_finding_lines(items, *, title_style=None, host_identities=None, width=None,
                         inventory=None, secret_style=None, direct_style=None):
-    cred1 = [item for item in items if item.get("rule") == "CRED-1"]
-    remaining = [item for item in items if item not in cred1]
+    pxe = [item for item in items if item.get("rule") == "PXE"]
+    remaining = [item for item in items if item not in pxe]
     lines = []
-    groups = {}
-    for item in cred1:
-        evidence = item.get("evidence", {}) or {}
-        key = (str(evidence.get("dp") or item.get("affected_object", "unknown")).casefold(),
-               str(evidence.get("site", "")).casefold())
-        groups.setdefault(key, []).append(item)
-    for group_items in sorted(groups.values(), key=lambda values: (
-            str((values[0].get("evidence", {}) or {}).get("dp", "")).casefold(),
-            str((values[0].get("evidence", {}) or {}).get("site", "")).casefold())):
+    ordered = sorted(pxe, key=lambda item: (
+        str((item.get("evidence", {}) or {}).get("site", "")).casefold(),
+        str((item.get("evidence", {}) or {}).get("dp")
+            or item.get("affected_object", "")).casefold()))
+    for item in ordered:
         if lines:
             lines.append("")
-        first = group_items[0]
-        evidence = first.get("evidence", {}) or {}
-        lines.append(_styled_finding_heading(_finding_title(first, inventory, host_identities), title_style))
-        statuses = list(dict.fromkeys(str(item.get("status", "")).upper() for item in group_items
-                                      if item.get("status")))
-        fields = [("Status", ", ".join(statuses))] if statuses else []
-        dp = evidence.get("dp") or first.get("affected_object")
+        evidence = item.get("evidence", {}) or {}
+        lines.append(_styled_finding_heading(_finding_title(item, inventory, host_identities), title_style))
+        fields = []
+        dp = evidence.get("dp") or item.get("affected_object")
         if dp not in (None, ""):
-            fields.append(("Distribution Point", _canonical_host_display(dp, host_identities)))
+            fields.append(("DP", _canonical_host_display(dp, host_identities)))
         if evidence.get("site") not in (None, ""):
             fields.append(("Site", evidence["site"]))
-        counts = [item.get("evidence", {}).get("unique_secrets") for item in group_items
-                  if item.get("evidence", {}).get("unique_secrets") is not None]
-        if counts:
-            fields.append(("Secrets", max(counts)))
+        state = str(evidence.get("state", "")).upper()
+        if state and state != "VULNERABLE":
+            fields.append(("State", state))
+        if evidence.get("reason"):
+            fields.append(("Reason", evidence["reason"]))
+        if evidence.get("recovered_count"):
+            fields.append(("Recovered", evidence["recovered_count"]))
+        if evidence.get("source"):
+            fields.append(("Source", evidence["source"]))
         if fields:
-            lines.extend(_compact_field_lines(fields, indent="    ", width=width, label_width=18))
+            lines.extend(_compact_field_lines(fields, indent="    ", width=width))
     if remaining:
         if lines:
             lines.append("")
@@ -1116,7 +1042,7 @@ def _smb_share_access_lines(shares, access_style=None):
 
 def _results_text(root, target, external_results, inventory, cas, templates, all_findings,
                   workspace, *, corroborated=0, disagreements=0, smb_shares=None, services=None,
-                  access_records=None, cred1=None, host_identities=None,
+                  access_records=None, host_identities=None,
                   networkhound_map_reference=""):
     lines = ["AD-Enum", "", "Target"]
     lines.extend(_compact_field_lines([
@@ -1153,13 +1079,6 @@ def _results_text(root, target, external_results, inventory, cas, templates, all
     access_lines = _access_summary_lines(access_records, host_identities=host_identities)
     if access_lines:
         lines.extend(["", "Authenticated Access", *access_lines])
-    if cred1:
-        lines.extend(["", "SCCM CRED-1 PXE"])
-        cred1_items = cred1 if isinstance(cred1, list) else [cred1]
-        for index, item in enumerate(cred1_items):
-            if index:
-                lines.append("")
-            lines.extend(_cred1_summary_lines(item, indent="  "))
     lines.extend(["", "Findings"])
     finding_lines = _finding_lines(all_findings, inventory=inventory, host_identities=host_identities)
     lines.extend(finding_lines or ["  None"])
@@ -1184,8 +1103,8 @@ def _build_parser():
     p.add_argument("--modules", default="all", help="comma-separated modules (default: all read-only collectors)")
     p.add_argument("--profile", default="default")
     p.add_argument("--certipy-json", help="optional Certipy -json result for corroboration")
-    p.add_argument("--cred1-dp", metavar="HOST_OR_IP",
-                   help="optionally run one bounded safe CRED-1 PXE query against a known DP")
+    p.add_argument("--pxe-dp", metavar="HOST_OR_IP",
+                   help="optionally validate one explicit PXE-enabled distribution point")
     # The output directory is the parent of the canonical domain workspace.
     # Keeping the default as the current directory makes new scans land in
     # ./<canonical-domain>/ while preserving the explicit --output-dir API.
@@ -1613,57 +1532,49 @@ def main():
                          sccm_result.get("dp_content", []))
     workspace.write_json(workspace.findings_path("SCCM", "task-sequences.json"),
                          sccm_result.get("task_sequences", []))
-    cred1_targets = [a.cred1_dp] if a.cred1_dp else cred1_candidates(sccm_result)
-    if cred1_targets:
-        console.activity("Checking SCCM CRED-1 PXE exposure...")
-        cred1_results = []
-        cinder_executable = cinderpath_path()
-        setup_decision = None
-        for cred1_target in cred1_targets[:4]:
-            runtime = check_cred1_runtime(cred1_target, cinder_executable)
-            if runtime.get("capability_fixable") and setup_decision is None:
-                if sys.stdin.isatty() and sys.stdout.isatty():
-                    console.line("SCCM/PXE credential checks require packet-capture capabilities.")
-                    console.line(f"  CinderPath .......... {'INSTALLED' if cinder_executable else 'MISSING'}")
-                    console.line(f"  Interface ........... {runtime.get('interface') or 'UNKNOWN'}")
-                    answer = input("Configure CinderPath packet-capture capability now? [y/N] ")
-                    setup_decision = answer.strip().lower() in {"y", "yes"}
-                    if setup_decision:
-                        ok, reason = fix_cinderpath_capabilities(cinder_executable)
-                        if not ok:
-                            setup_decision = False
-                            runtime["setup_error"] = reason
-                        else:
-                            runtime = check_cred1_runtime(cred1_target, cinder_executable)
-                            runtime["setup"] = reason
-                else:
-                    setup_decision = False
-            if setup_decision is False and runtime.get("capability_fixable"):
-                runtime["reasons"].append("setup declined or noninteractive execution")
-            if runtime["status"] != "READY":
-                cred1_results.append({"dp": cred1_target, "pxe": "NOT TESTED", "wds": "NOT TESTED",
-                                      "tftp": "NOT TESTED", "media_protection": "UNKNOWN",
-                                      "secret_inspection": "NOT ATTEMPTED", "evidence": runtime["reasons"],
-                                      "sources": ["CRED-1 execution-host prerequisite check"],
-                                      "runtime": runtime})
-            else:
-                cred1_results.append(run_cinderpath_cred1(cred1_target, timeout=min(a.timeout, 60),
-                                                         executable=cinder_executable))
-        sccm_result["cred1"] = cred1_results[0] if len(cred1_results) == 1 else cred1_results
-        workspace.write_json(workspace.findings_path("SCCM", "cred1.json"), sccm_result["cred1"])
-        cred1_status = "PASS" if any(x.get("pxe") == "CONFIRMED" for x in cred1_results) else "PARTIAL"
-        coverage.add("SCCM / CRED-1 safe PXE acquisition", cred1_status,
-                     f"{len(cred1_results)} discovered DP candidate(s) checked")
-        full_cred1 = any(str(x.get("status", "")).upper() in {"CONFIRMED", "COMPLETE"}
-                         and str(x.get("secret_inspection", "")).upper() == "COMPLETE"
-                         for x in cred1_results)
-        coverage.add("SCCM / CRED-1 deterministic recovery",
-                     "PASS" if any(x.get("credentials") for x in cred1_results) or full_cred1 else "PARTIAL",
-                     "CinderPath adapter completed bounded read/decode path")
-        console.complete("SCCM CRED-1 PXE analysis complete")
+    pxe_tool = pxethief_capability()
+    if a.pxe_dp:
+        pxe_targets = [{"dp": a.pxe_dp, "host": a.pxe_dp, "site_code": "",
+                        "basis": "operator-specified", "pxe_evidence": False}]
     else:
-        coverage.add("SCCM / CRED-1 safe PXE acquisition", "NOT TESTED",
-                     "use --cred1-dp with one known distribution point")
+        # Only discovered distribution points / management points are probed;
+        # PXEThief is never run against arbitrary hosts.
+        pxe_targets = pxe_candidates(sccm_result)[:4]
+    pxe_results = []
+    if pxe_targets:
+        console.activity("Validating SCCM PXE exposure...")
+        for candidate in pxe_targets:
+            if pxe_tool["status"] != "PASS":
+                pxe_results.append({"dp": candidate["dp"], "site_code": candidate.get("site_code", ""),
+                                    "state": "NOT TESTED", "source": "",
+                                    "errors": ["PXEThief unavailable"]})
+                continue
+            safe_dp = re.sub(r"[^A-Za-z0-9._-]", "_", str(candidate["dp"])) or "dp"
+            workdir = workspace.module_dir("SCCM") / "pxethief" / "raw" / safe_dp
+            result = run_pxethief(candidate["dp"], timeout=min(max(a.timeout, 60), 300),
+                                  workdir=workdir)
+            result["site_code"] = result.get("site_code") or candidate.get("site_code", "")
+            result["basis"] = candidate.get("basis", "")
+            pxe_results.append(result)
+        workspace.write_json(workspace.findings_path("SCCM", "pxe-validation.json"), pxe_results)
+        validated = [x for x in pxe_results
+                     if str(x.get("state", "")).upper() in {"VULNERABLE", "NOT VULNERABLE"}]
+        vulnerable = [x for x in pxe_results if str(x.get("state", "")).upper() == "VULNERABLE"]
+        if pxe_tool["status"] != "PASS":
+            coverage.add("SCCM / PXE validation", "NOT TESTED", "PXEThief unavailable")
+        elif vulnerable:
+            coverage.add("SCCM / PXE validation", "PASS",
+                         f"{len(vulnerable)} of {len(pxe_results)} candidate(s) exposed")
+        else:
+            coverage.add("SCCM / PXE validation", "PARTIAL",
+                         f"{len(validated)} of {len(pxe_results)} candidate(s) validated")
+        if validated:
+            for capability in ("distribution point", "PXE / WDS"):
+                coverage.add(f"SCCM / {capability}", "PASS", "validated by PXEThief")
+        console.complete("SCCM PXE validation complete")
+    else:
+        coverage.add("SCCM / PXE validation", "NOT TESTED",
+                     "no PXE-enabled distribution point discovered")
     coverage.add("SCCM / infrastructure discovery", "PASS", f"{len(sccm_result.get('hosts', []))} candidate host(s)")
     # Keep SCCM coverage granular: the aggregate line describes the
     # discovery family only and must not imply that every role is observable.
@@ -1673,13 +1584,6 @@ def main():
     for capability in ("distribution point", "PXE / WDS", "boot metadata", "task-sequence metadata",
                        "SQL association", "SUP / WSUS", "SCCM ACL", "DP content metadata"):
         coverage.add(f"SCCM / {capability}", "NOT TESTED", "requires live role evidence")
-    if cred1_targets:
-        cred1_complete = any(str(x.get("status", "")).upper() in {"CONFIRMED", "COMPLETE"}
-                             and str(x.get("secret_inspection", "")).upper() == "COMPLETE"
-                             for x in cred1_results)
-        if cred1_complete:
-            for capability in ("distribution point", "PXE / WDS", "boot metadata", "task-sequence metadata"):
-                coverage.add(f"SCCM / {capability}", "PASS", "validated by CinderPath CRED-1 adapter")
     console.complete("SCCM analysis complete")
     console.activity("Enumerating MSSQL infrastructure...")
     mssql_inventory = normalize_mssql(inventory)
@@ -2056,35 +1960,31 @@ def main():
                 evidence=secret, status="single-source", priority="high",
                 workspace_artifacts=["LDAP/attributes.json"], first_seen_scan=workspace.scan_id,
                 current_scan=workspace.scan_id).as_dict())
-    cred1_findings = []
-    cred1_output = sccm_result.get("cred1")
-    cred1_items = cred1_output if isinstance(cred1_output, list) else ([cred1_output] if cred1_output else [])
-    for cred1_item in cred1_items:
-        for secret in cred1_item.get("credentials", []) or []:
-            value = secret.get("value", secret.get("password", ""))
-            if not value:
-                continue
-            name = secret.get("name", "") or "CRED-1 secret"
-            digest = hashlib.sha256(str(value).encode()).hexdigest()[:16]
-            cred1_findings.append(NormalizedFinding(
-                finding_id=f"sccm-cred1:{cred1_item.get('dp', 'unknown')}:{name}:{digest}",
-                category="SCCM", rule="CRED-1", title="CRED-1 — PXE boot media exposes credential material",
-                affected_object=cred1_item.get("dp", "unknown"), domain=workspace.domain,
-                sources=[{"source": "CinderPath", "observed": True}],
-                evidence={"type": secret.get("type", "other"), "name": name,
-                          "username": secret.get("username", ""), "value": value,
-                          "source_policy": secret.get("source_policy", ""),
-                          "task_sequence": secret.get("task_sequence", ""),
-                          "dp": cred1_item.get("dp", ""), "site": cred1_item.get("site_code", ""),
-                          "interface": cred1_item.get("interface", ""),
-                          "wds": cred1_item.get("wds", "UNKNOWN"),
-                          "boot_var": cred1_item.get("boot_var", "UNKNOWN"),
-                          "media_identity": cred1_item.get("media_identity", "UNKNOWN"),
-                          "assignment": cred1_item.get("assignment", "UNKNOWN"),
-                          "policies": cred1_item.get("policies", 0),
-                          "unique_secrets": len(cred1_item.get("credentials", []) or [])},
-                status="confirmed", priority="high", workspace_artifacts=["SCCM/cred1.json"],
-                first_seen_scan=workspace.scan_id, current_scan=workspace.scan_id).as_dict())
+    pxe_findings = []
+    for result in pxe_results:
+        state = str(result.get("state", "NOT TESTED")).upper()
+        dp = result.get("dp") or "unknown"
+        recovered = list(result.get("credentials", []) or [])
+        source = result.get("source", "") or ""
+        display_dp = _canonical_host_display(dp, dns_map)
+        title = (f"PXE VULNERABLE — {display_dp}" if state == "VULNERABLE"
+                 else f"PXE — {display_dp}")
+        reason = (result.get("errors") or [""])[0]
+        pxe_findings.append(NormalizedFinding(
+            finding_id=f"sccm-pxe:{dp}", category="SCCM", rule="PXE", title=title,
+            affected_object=dp, domain=workspace.domain,
+            sources=[{"source": "PXEThief", "observed": True}] if source else [],
+            evidence={"dp": dp, "site": result.get("site_code", ""), "state": state,
+                      "interface": result.get("interface", ""),
+                      "media_file": result.get("media_file", ""),
+                      "recovered_count": len(recovered), "recovered": recovered,
+                      "source": source, "reason": reason,
+                      "errors": list(result.get("errors", []) or [])},
+            status=("confirmed" if state == "VULNERABLE" else
+                    "not-vulnerable" if state == "NOT VULNERABLE" else "not-tested"),
+            priority="high" if state == "VULNERABLE" else "medium",
+            workspace_artifacts=["SCCM/pxe-validation.json"],
+            first_seen_scan=workspace.scan_id, current_scan=workspace.scan_id).as_dict())
     seen_credentials = set()
     for item in gpo_findings + ldap_secret_findings:
         value = item.get("evidence", {}).get("value")
@@ -2100,16 +2000,22 @@ def main():
                                        "type": evidence.get("type", item.get("rule")),
                                        "source": item.get("file") or evidence.get("attribute"),
                                        "context": item.get("gpo", {}).get("display_name") or item.get("title")})
-    for item in cred1_findings:
+    for item in pxe_findings:
         evidence = item["evidence"]
-        key = (str(evidence.get("username") or evidence.get("name")).lower(),
-               str(evidence.get("value")), "CRED-1")
-        if key not in seen_credentials:
+        for secret in evidence.get("recovered", []) or []:
+            value = secret.get("value")
+            if not value:
+                continue
+            account = secret.get("username") or secret.get("name") or "UNKNOWN"
+            key = (str(account).lower(), str(value), "PXE")
+            if key in seen_credentials:
+                continue
             seen_credentials.add(key)
-            discovered_credentials.append({"account": evidence.get("username") or evidence.get("name"),
-                                           "value": evidence["value"], "type": evidence.get("type", "other"),
-                                           "source": evidence.get("source_policy") or "CinderPath",
-                                           "context": f"CRED-1 PXE — {evidence.get('dp', '')}"})
+            discovered_credentials.append(
+                {"account": account, "value": value,
+                 "type": secret.get("name") or "PXE media credential",
+                 "source": evidence.get("source") or "PXEThief",
+                 "context": f"PXE media — {evidence.get('dp', '')}"})
     workspace.write_json(workspace.root / "credentials.json", discovered_credentials)
     workspace.write_text(workspace.root / "credentials.txt", "\n\n".join(
         f"Credential exposure — {x['context']}\n  Account: {x['account']}\n"
@@ -2192,7 +2098,7 @@ def main():
     active_kerberos_findings = [x for x in kerberos_findings
                                 if not (x.get("rule") == "Kerberoastable-account"
                                         and x.get("evidence", {}).get("enabled") is False)]
-    all_findings = (finding_records + policy_findings + description_findings + ldap_secret_findings + cred1_findings + active_kerberos_findings +
+    all_findings = (finding_records + policy_findings + description_findings + ldap_secret_findings + pxe_findings + active_kerberos_findings +
                     domain_security_findings +
                     delegation_findings + relay_findings + smb_findings + acl_findings +
                     ldap_security_findings + anonymous_smb_findings + [x["normalized"] for x in gpo_findings])
@@ -2248,8 +2154,7 @@ def main():
     report_text = _results_text(root, target, external_results, inventory, cas, templates, all_findings,
                                 workspace, corroborated=len(statuses), disagreements=len(disagreements),
                                 smb_shares=share_inventory, services=service_inventory,
-                                access_records=access_records, cred1=sccm_result.get("cred1"),
-                                host_identities=dns_map,
+                                access_records=access_records, host_identities=dns_map,
                                 networkhound_map_reference=networkhound_map_reference)
     workspace.write_text_atomic(workspace.root / "results.txt", report_text)
     # Keep a non-destructive historical copy for this scan ID.
@@ -2279,9 +2184,10 @@ def main():
                 "smb_shares": share_inventory,
                 "services": service_inventory,
                 "access": access_records,
-                "sccm": {key: sccm_result.get(key, []) for key in
-                          ("site_code", "management_points", "distribution_points", "site_servers",
-                           "sms_providers", "sql_servers", "sup_wsus", "pxe", "cred1", "status")},
+                "sccm": {**{key: sccm_result.get(key, []) for key in
+                            ("site_code", "management_points", "distribution_points", "site_servers",
+                             "sms_providers", "sql_servers", "sup_wsus", "pxe", "status")},
+                         "pxe_validation": pxe_results},
                 "coverage": coverage.as_dict(),
             }
             write_html_report(a.html_out, html_model)
@@ -2354,16 +2260,6 @@ def main():
         console.heading("Authenticated Access")
         for line in access_lines:
             console.line(line)
-    cred1_output = sccm_result.get("cred1")
-    if cred1_output:
-        console.line()
-        console.heading("SCCM CRED-1 PXE")
-        cred1_items = cred1_output if isinstance(cred1_output, list) else [cred1_output]
-        for index, item in enumerate(cred1_items):
-            if index:
-                console.line()
-            for line in _cred1_summary_lines(item, indent="  ", secret_style=console.highlight_secret):
-                console.line(line)
     console.line()
     console.heading("Findings")
     if not all_findings:
