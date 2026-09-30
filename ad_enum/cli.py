@@ -1537,25 +1537,38 @@ def main():
         pxe_targets = [{"dp": a.pxe_dp, "host": a.pxe_dp, "site_code": "",
                         "basis": "operator-specified", "pxe_evidence": False}]
     else:
-        # Only discovered distribution points / management points are probed;
-        # PXEThief is never run against arbitrary hosts.
-        pxe_targets = pxe_candidates(sccm_result)[:4]
+        # Every discovered distribution point / site system is validated.  The
+        # phase never stops early, so a leak on one endpoint cannot hide the
+        # state of the others.
+        pxe_targets = pxe_candidates(sccm_result, dns_map)
     pxe_results = []
     if pxe_targets:
-        console.activity("Validating SCCM PXE exposure...")
-        for candidate in pxe_targets:
-            if pxe_tool["status"] != "PASS":
-                pxe_results.append({"dp": candidate["dp"], "site_code": candidate.get("site_code", ""),
+        console.activity(f"Validating SCCM PXE exposure ({len(pxe_targets)} endpoint(s))...")
+        used_dirs = set()
+        for index, candidate in enumerate(pxe_targets, start=1):
+            try:
+                if pxe_tool["status"] != "PASS":
+                    pxe_results.append({"dp": candidate["dp"],
+                                        "site_code": candidate.get("site_code", ""),
+                                        "state": "NOT TESTED", "source": "",
+                                        "errors": ["PXEThief unavailable"]})
+                    continue
+                safe_dp = re.sub(r"[^A-Za-z0-9._-]", "_", str(candidate["dp"])) or "dp"
+                if safe_dp in used_dirs:
+                    safe_dp = f"{safe_dp}.{index}"
+                used_dirs.add(safe_dp)
+                workdir = workspace.module_dir("SCCM") / "pxethief" / "raw" / safe_dp
+                result = run_pxethief(candidate["dp"], timeout=min(max(a.timeout, 60), 300),
+                                      workdir=workdir)
+                result["site_code"] = result.get("site_code") or candidate.get("site_code", "")
+                result["basis"] = candidate.get("basis", "")
+                pxe_results.append(result)
+            except Exception as exc:
+                # One endpoint must never abort validation of the others.
+                pxe_results.append({"dp": candidate.get("dp", "unknown"),
+                                    "site_code": candidate.get("site_code", ""),
                                     "state": "NOT TESTED", "source": "",
-                                    "errors": ["PXEThief unavailable"]})
-                continue
-            safe_dp = re.sub(r"[^A-Za-z0-9._-]", "_", str(candidate["dp"])) or "dp"
-            workdir = workspace.module_dir("SCCM") / "pxethief" / "raw" / safe_dp
-            result = run_pxethief(candidate["dp"], timeout=min(max(a.timeout, 60), 300),
-                                  workdir=workdir)
-            result["site_code"] = result.get("site_code") or candidate.get("site_code", "")
-            result["basis"] = candidate.get("basis", "")
-            pxe_results.append(result)
+                                    "errors": [f"{type(exc).__name__}: {exc}"]})
         workspace.write_json(workspace.findings_path("SCCM", "pxe-validation.json"), pxe_results)
         validated = [x for x in pxe_results
                      if str(x.get("state", "")).upper() in {"VULNERABLE", "NOT VULNERABLE"}]
@@ -1965,6 +1978,8 @@ def main():
         state = str(result.get("state", "NOT TESTED")).upper()
         dp = result.get("dp") or "unknown"
         recovered = list(result.get("credentials", []) or [])
+        recovered_count = (result.get("recovered_count")
+                           if result.get("recovered_count") is not None else len(recovered))
         source = result.get("source", "") or ""
         display_dp = _canonical_host_display(dp, dns_map)
         title = (f"PXE VULNERABLE — {display_dp}" if state == "VULNERABLE"
@@ -1977,7 +1992,7 @@ def main():
             evidence={"dp": dp, "site": result.get("site_code", ""), "state": state,
                       "interface": result.get("interface", ""),
                       "media_file": result.get("media_file", ""),
-                      "recovered_count": len(recovered), "recovered": recovered,
+                      "recovered_count": recovered_count, "recovered": recovered,
                       "source": source, "reason": reason,
                       "errors": list(result.get("errors", []) or [])},
             status=("confirmed" if state == "VULNERABLE" else

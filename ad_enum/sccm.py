@@ -202,39 +202,67 @@ def probe_management_points(management_points, timeout=5):
     return results
 
 
-def pxe_candidates(result):
-    """Return bounded, deterministic PXE/DP candidates from SCCM discovery.
+def _candidate_ipv4(addresses):
+    for address in addresses or []:
+        try:
+            if ipaddress.ip_address(str(address)).version == 4:
+                return str(address)
+        except ValueError:
+            continue
+    return ""
+
+
+def _resolved_hostnames(dns_map):
+    """Map lowercase FQDN/short names to a known IPv4 address."""
+    index = {}
+    for record in (dns_map or {}).get("records", []) or []:
+        if not isinstance(record, dict):
+            continue
+        addresses = record.get("ip_addresses") or record.get("ips") or []
+        if isinstance(addresses, str):
+            addresses = [addresses]
+        address = _candidate_ipv4(addresses)
+        name = str(record.get("fqdn") or record.get("host") or "").strip().lower()
+        if not address or not name:
+            continue
+        index.setdefault(name, address)
+        index.setdefault(name.split(".")[0], address)
+    return index
+
+
+def pxe_candidates(result, host_identities=None):
+    """Return deterministic PXE/DP candidates from SCCM discovery.
 
     SCCM commonly co-locates the management point, distribution point, and
     PXE/WDS role on a single site system, and the passive netboot SCP
     attributes are not always published.  Candidates are therefore drawn from
     discovered distribution points first and then from confirmed management
     points, each tagged with the discovery basis; arbitrary hosts are never
-    invented or scanned.
+    invented or scanned.  Entries that canonicalize to the same endpoint
+    (IPv4 address, or hostname resolved against the scan's own DNS map) are
+    collapsed to a single candidate; genuinely distinct endpoints are kept.
     """
     result = result if isinstance(result, dict) else {}
     observed = [(item, "distribution-point") for item in (result.get("distribution_points", []) or [])]
     observed += [(item, "management-point") for item in (result.get("management_points", []) or [])]
     pxe_state = str((result.get("pxe") or {}).get("status", "")).upper()
+    resolved = _resolved_hostnames(host_identities)
     candidates, seen = [], set()
     for item, basis in observed:
         if not isinstance(item, dict):
             continue
-        host = item.get("fqdn") or item.get("host") or item.get("name")
+        host = str(item.get("fqdn") or item.get("host") or item.get("name") or "").strip()
         addresses = item.get("ip_addresses") or item.get("ips") or []
         if isinstance(addresses, str):
             addresses = [addresses]
-        target = host
-        for address in addresses:
-            try:
-                if ipaddress.ip_address(str(address)).version == 4:
-                    target = str(address)
-                    break
-            except ValueError:
-                continue
-        if not target or str(target).casefold() in seen:
+        name_key = host.lower()
+        address = (_candidate_ipv4(addresses) or resolved.get(name_key)
+                   or resolved.get(name_key.split(".")[0], "") or "")
+        target = address or host
+        canonical = (address or name_key).casefold()
+        if not canonical or canonical in seen:
             continue
-        seen.add(str(target).casefold())
+        seen.add(canonical)
         candidates.append({"dp": str(target), "host": str(host or target),
                            "site_code": item.get("site_code", ""), "basis": basis,
                            "pxe_evidence": pxe_state == "ENABLED"})
