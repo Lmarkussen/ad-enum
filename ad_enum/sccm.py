@@ -14,6 +14,13 @@ def _values(attrs, key):
     return value if isinstance(value, list) else ([value] if value not in (None, "") else [])
 
 
+def _scalar(value, default=""):
+    """Unwrap a single-element LDAP attribute list into a plain string."""
+    if isinstance(value, (list, tuple)):
+        value = value[0] if value else ""
+    return str(value) if value not in (None, "") else str(default)
+
+
 def parse_sccm_publication(objects):
     """Normalize only SCCM-specific publication evidence; no hostname guesses."""
     result = {"objects": [], "site_codes": [], "roles": [], "endpoints": []}
@@ -70,11 +77,11 @@ def discover(inventory, raw=None, dns_map=None):
     spn_accounts = []
     for record in inventory.records.get("computers", {}).values():
         attrs = record.attributes
-        name = str(attrs.get("name") or attrs.get("cn") or "").rstrip("$")
+        name = _scalar(attrs.get("name") or attrs.get("cn")).rstrip("$")
         spns = attrs.get("servicePrincipalName") or attrs.get("serviceprincipalnames") or []
         if isinstance(spns, str): spns = [spns]
         if spns:
-            spn_accounts.append({"account": attrs.get("sAMAccountName", name),
+            spn_accounts.append({"account": _scalar(attrs.get("sAMAccountName"), name),
                                  "spns": list(spns), "sources": record.sources})
         hints = []
         if any("MSSQLSvc/" in str(x) for x in spns): hints.append("SQL")
@@ -87,7 +94,7 @@ def discover(inventory, raw=None, dns_map=None):
             if "SQL" in upper and "SCCM-HOST-CANDIDATE" not in upper: role = "sql-candidate"
             elif "MANAGEMENT-POINT-CANDIDATE" in upper: role = "management-point-candidate"
             elif "SCCM-HOST-CANDIDATE" in upper: role = "site-server-candidate"
-            hosts.append({"name": name, "fqdn": attrs.get("dNSHostName", ""),
+            hosts.append({"name": name, "fqdn": _scalar(attrs.get("dNSHostName")),
                           "sid": record.identifier, "role": role,
                           "hints": sorted(set(hints)), "sources": record.sources})
             for hint in sorted(set(hints)):

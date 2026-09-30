@@ -26,6 +26,21 @@ class ProtectedLDAPError(Exception):
     """Raised when a DC requires LDAP integrity but no protected transport worked."""
 
 
+# Attributes backing the native inventory and the SCCM role heuristics.
+# ``name``/``cn`` are read by sccm.discover()'s host-name hints; they were
+# previously not requested, which made those hints inert and let the SQL and
+# site-server topology disappear whenever SPN-based detection was unavailable.
+IDENTITY_ATTRIBUTES = [
+    "objectSid", "sAMAccountName", "name", "cn", "displayName", "description", "info",
+    "comment", "extensionAttribute1", "extensionAttribute2", "extensionAttribute3",
+    "dNSHostName", "userAccountControl", "memberOf", "member", "objectClass", "objectGUID",
+    "primaryGroupID", "lastLogonTimestamp", "pwdLastSet", "servicePrincipalName",
+    "msDS-ResultantPSO", "msDS-AllowedToDelegateTo", "msDS-AllowedToActOnBehalfOfOtherIdentity",
+    "msDS-GroupMSAMembership", "adminCount", "ms-Mcs-AdmPwdExpirationTime",
+    "msLAPS-PasswordExpirationTime", "msLAPS-EncryptedPasswordExpirationTime",
+]
+
+
 class Collector:
     def __init__(self, host, username, password, domain, use_ssl=False, port=None, timeout=10, force_kerb=False):
         self.host, self.username, self.password, self.domain = host, username, password, domain
@@ -174,7 +189,7 @@ class Collector:
         attrs_ca = ["cn", "dNSHostName", "certificateTemplates", "cACertificate", "flags", "nTSecurityDescriptor"]
         conn.search(f"CN=Enrollment Services,{base}", "(objectClass=pKIEnrollmentService)", attributes=attrs_ca, controls=security_descriptor_control(sdflags=0x04))
         raw_cas = [dict(e.entry_attributes_as_dict, distinguishedName=e.entry_dn) for e in conn.entries]
-        conn.search(root, "(|(objectClass=user)(objectClass=group)(objectClass=computer)(objectClass=msDS-GroupManagedServiceAccount))", attributes=["objectSid", "sAMAccountName", "displayName", "description", "info", "comment", "extensionAttribute1", "extensionAttribute2", "extensionAttribute3", "dNSHostName", "userAccountControl", "memberOf", "member", "objectClass", "objectGUID", "primaryGroupID", "lastLogonTimestamp", "pwdLastSet", "servicePrincipalName", "msDS-ResultantPSO", "msDS-AllowedToDelegateTo", "msDS-AllowedToActOnBehalfOfOtherIdentity", "msDS-GroupMSAMembership", "adminCount", "ms-Mcs-AdmPwdExpirationTime", "msLAPS-PasswordExpirationTime", "msLAPS-EncryptedPasswordExpirationTime"])
+        conn.search(root, "(|(objectClass=user)(objectClass=group)(objectClass=computer)(objectClass=msDS-GroupManagedServiceAccount))", attributes=IDENTITY_ATTRIBUTES)
         raw_identities = [dict(e.entry_attributes_as_dict, distinguishedName=e.entry_dn) for e in conn.entries]
         # SCCM publishes site/service metadata below this AD container when
         # the System Management publication is enabled.  Collection is
